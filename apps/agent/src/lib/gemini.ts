@@ -1,16 +1,9 @@
 import { GoogleGenAI } from "@google/genai";
 import { z } from "zod";
-import type { GeminiAction, GeminiVerification, TestStep } from "@verifai/types";
+import type { ComputerUseAction, GeminiVerification, TestStep } from "@verifai/types";
+import { MODELS, waitForRateLimit, withRetry } from "./models.js";
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
-const MODEL = "gemini-2.5-flash";
-
-const ActionSchema = z.object({
-  action: z.enum(["click", "type", "navigate", "scroll", "wait", "assert"]),
-  selector: z.string().optional(),
-  value: z.string().optional(),
-  reasoning: z.string(),
-});
 
 const VerificationSchema = z.object({
   passed: z.boolean(),
@@ -18,159 +11,273 @@ const VerificationSchema = z.object({
   severity: z.enum(["high", "medium", "low"]).optional(),
 });
 
-function parseJSON<T>(text: string, schema: z.ZodSchema<T>): T {
-  const cleaned = text.replace(/^```json?\n?/, "").replace(/\n?```$/, "").trim();
-  return schema.parse(JSON.parse(cleaned));
+function cleanJSON(text: string): string {
+  return text.replace(/^```json?\n?/g, "").replace(/\n?```$/g, "").trim();
 }
+
+// ════════════════════════════════════════════════════════
+// VISION MODEL — Gemini 3 Flash + Computer Use (5 RPM)
+// This is the CORE of the agent — it SEES the browser and
+// decides WHAT ACTION to take next.
+// ════════════════════════════════════════════════════════
 
 export async function decideAction(
   screenshotBase64: string,
   aomSnapshot: string,
-  step: TestStep
-): Promise<GeminiAction> {
-  const response = await ai.models.generateContent({
-    model: MODEL,
-    contents: [
-      {
-        role: "user",
-        parts: [
-          {
-            inlineData: {
-              mimeType: "image/jpeg",
-              data: screenshotBase64,
+  step: TestStep,
+  previousActions: string[] = []
+): Promise<ComputerUseAction> {
+  return withRetry(async () => {
+    await waitForRateLimit(MODELS.vision);
+
+    const prevContext = previousActions.length > 0
+      ? `\nPrevious actions this session:\n${previousActions.slice(-5).join("\n")}`
+      : "";
+
+    const response = await ai.models.generateContent({
+      model: MODELS.vision,
+      contents: [
+        {
+          role: "user",
+          parts: [
+            {
+              inlineData: {
+                mimeType: "image/jpeg",
+                data: screenshotBase64,
+              },
+            },
+            {
+              text: `You are an autonomous QA browser agent. You are looking at a LIVE screenshot of a web application.
+
+YOUR CURRENT TASK: ${step.text}
+EXPECTED OUTCOME: ${step.expectedBehavior}
+${step.targetElement ? `HINT — look for element matching: ${step.targetElement}` : ""}
+${prevContext}
+
+Accessibility tree (partial):
+${aomSnapshot}
+
+INSTRUCTIONS:
+- The browser viewport is exactly 1280×720 pixels
+- Decide the SINGLE NEXT action to accomplish the task
+- Use the computer_use tool to perform the action
+- Click coordinates must target the CENTER of the element you want to interact with
+- For text input fields: click the field coordinate first, then use type with the text
+- If the expected outcome is ALREADY visible on screen, respond with text "STEP_COMPLETE"
+- Be precise with pixel coordinates — look carefully at the screenshot`,
+            },
+          ],
+        },
+      ],
+      config: {
+        tools: [{
+          computerUse: {
+            environment: {
+              width: 1280,
+              height: 720,
             },
           },
-          {
-            text: `You are a browser automation agent. Given the current screenshot and accessibility tree, decide the next action to accomplish this step.
-
-Step: ${step.text}
-Expected behavior: ${step.expectedBehavior}
-${step.targetElement ? `Suggested selector: ${step.targetElement}` : ""}
-
-Accessibility tree (AOM snapshot):
-${aomSnapshot.slice(0, 4000)}
-
-Return a JSON object with:
-{
-  "action": "click" | "type" | "navigate" | "scroll" | "wait" | "assert",
-  "selector": "CSS selector for the target element (required for click/type)",
-  "value": "text to type, URL to navigate to, or scroll direction",
-  "reasoning": "Brief explanation of why this action"
-}
-
-Return ONLY valid JSON, no markdown fences.`,
-          },
-        ],
+        }],
       },
-    ],
-  });
+    });
 
-  return parseJSON(response.text ?? "", ActionSchema);
+    return parseComputerUseResponse(response);
+  }, "decideAction");
 }
 
-export async function sendToolResponse(
+export async function retryAction(
   errorString: string,
   screenshotBase64: string,
   aomSnapshot: string,
   step: TestStep
-): Promise<GeminiAction> {
-  const response = await ai.models.generateContent({
-    model: MODEL,
-    contents: [
-      {
-        role: "user",
-        parts: [
-          {
-            inlineData: {
-              mimeType: "image/jpeg",
-              data: screenshotBase64,
+): Promise<ComputerUseAction> {
+  return withRetry(async () => {
+    await waitForRateLimit(MODELS.vision);
+
+    const response = await ai.models.generateContent({
+      model: MODELS.vision,
+      contents: [
+        {
+          role: "user",
+          parts: [
+            { inlineData: { mimeType: "image/jpeg", data: screenshotBase64 } },
+            {
+              text: `Your previous browser action FAILED with this error:
+ERROR: ${errorString}
+
+TASK: ${step.text}
+EXPECTED: ${step.expectedBehavior}
+
+Accessibility tree:
+${aomSnapshot}
+
+Look at the screenshot carefully. Try a DIFFERENT approach — different coordinates, different element, or a different action type entirely. Viewport is 1280×720. Use the computer_use tool.`,
             },
-          },
-          {
-            text: `You are a browser automation agent. Your previous action FAILED with this error:
-
-Error: ${errorString}
-
-Step to accomplish: ${step.text}
-Expected behavior: ${step.expectedBehavior}
-
-Current accessibility tree:
-${aomSnapshot.slice(0, 4000)}
-
-The previous selector may have been wrong. Look at the current screenshot and accessibility tree carefully. Try a different approach — use a different selector, or try a different action type.
-
-Return a JSON object:
-{
-  "action": "click" | "type" | "navigate" | "scroll" | "wait" | "assert",
-  "selector": "CSS selector (try a different one from before)",
-  "value": "text/URL/direction if needed",
-  "reasoning": "What went wrong and what you are trying differently"
-}
-
-Return ONLY valid JSON, no markdown fences.`,
-          },
-        ],
+          ],
+        },
+      ],
+      config: {
+        tools: [{ computerUse: { environment: { width: 1280, height: 720 } } }],
       },
-    ],
-  });
+    });
 
-  return parseJSON(response.text ?? "", ActionSchema);
+    const action = parseComputerUseResponse(response);
+    action.reasoning = `Self-heal: ${action.reasoning || "retrying differently"}`;
+    return action;
+  }, "retryAction");
 }
+
+// Fallback when vision model (3 Flash) is rate-limited — use lite model
+export async function fallbackDecideAction(
+  screenshotBase64: string,
+  aomSnapshot: string,
+  step: TestStep
+): Promise<ComputerUseAction> {
+  return withRetry(async () => {
+    await waitForRateLimit(MODELS.lite);
+
+    const response = await ai.models.generateContent({
+      model: MODELS.lite,
+      contents: [
+        {
+          role: "user",
+          parts: [
+            { inlineData: { mimeType: "image/jpeg", data: screenshotBase64 } },
+            {
+              text: `Browser QA agent. Viewport 1280×720. Task: "${step.text}". Expected: "${step.expectedBehavior}".
+${step.targetElement ? `Element hint: ${step.targetElement}` : ""}
+
+Accessibility tree:
+${aomSnapshot}
+
+Return ONLY a JSON object, no markdown fences:
+{"type":"click","coordinate":[x,y],"reasoning":"why"}
+Valid types: click, type, scroll, key_press, navigate, wait
+For type: include "text" field. For key_press: include "key" field. For scroll: include "direction" field.`,
+            },
+          ],
+        },
+      ],
+    });
+
+    const parsed = JSON.parse(cleanJSON(response.text || ""));
+    return {
+      type: parsed.type || "click",
+      coordinate: parsed.coordinate,
+      text: parsed.text,
+      key: parsed.key,
+      direction: parsed.direction,
+      url: parsed.url,
+      reasoning: `[Fallback] ${parsed.reasoning || "lite model decision"}`,
+    } as ComputerUseAction;
+  }, "fallbackDecideAction");
+}
+
+// ════════════════════════════════════════════════════════
+// Parse Gemini 3 Flash Computer Use response
+// ════════════════════════════════════════════════════════
+
+function parseComputerUseResponse(response: any): ComputerUseAction {
+  const candidate = response.candidates?.[0];
+  if (!candidate?.content?.parts) {
+    throw new Error("Empty response from Gemini Computer Use model");
+  }
+
+  for (const part of candidate.content.parts) {
+    // Native Computer Use function_call
+    if (part.functionCall) {
+      const args = (part.functionCall.args || {}) as Record<string, any>;
+      return {
+        type: args.action || part.functionCall.name || "click",
+        coordinate: args.coordinate ? [args.coordinate[0], args.coordinate[1]] : undefined,
+        text: args.text,
+        key: args.key,
+        url: args.url,
+        direction: args.direction,
+        reasoning: args.reasoning || `Computer Use: ${part.functionCall.name}`,
+      };
+    }
+
+    // Text response — STEP_COMPLETE or fallback JSON
+    if (part.text) {
+      const text = part.text.trim();
+      if (text.includes("STEP_COMPLETE")) {
+        return { type: "screenshot", reasoning: "Step already complete" };
+      }
+      try {
+        const p = JSON.parse(cleanJSON(text));
+        return {
+          type: p.action || p.type || "click",
+          coordinate: p.coordinate,
+          text: p.text || p.value,
+          key: p.key,
+          url: p.url,
+          direction: p.direction,
+          reasoning: p.reasoning || "Parsed from text",
+        };
+      } catch {
+        console.warn("[Gemini] Non-parseable text:", text.slice(0, 150));
+      }
+    }
+  }
+
+  throw new Error("No actionable response from Computer Use model");
+}
+
+// ════════════════════════════════════════════════════════
+// LITE MODEL — Gemini 2.5 Flash Lite (10 RPM)
+// Used for: verification, narration, bug descriptions
+// These do NOT consume the precious 5 RPM vision quota
+// ════════════════════════════════════════════════════════
 
 export async function verifyStep(
   screenshotBase64: string,
   expectedBehavior: string
 ): Promise<GeminiVerification> {
-  const response = await ai.models.generateContent({
-    model: MODEL,
-    contents: [
-      {
-        role: "user",
-        parts: [
-          {
-            inlineData: {
-              mimeType: "image/jpeg",
-              data: screenshotBase64,
+  return withRetry(async () => {
+    await waitForRateLimit(MODELS.lite);
+
+    const response = await ai.models.generateContent({
+      model: MODELS.lite,
+      contents: [
+        {
+          role: "user",
+          parts: [
+            { inlineData: { mimeType: "image/jpeg", data: screenshotBase64 } },
+            {
+              text: `QA verification. Look at this screenshot. Did the expected behavior happen?
+
+Expected: ${expectedBehavior}
+
+Return ONLY JSON, no markdown: {"passed":true/false,"finding":"what you see","severity":"high"|"medium"|"low"}
+(severity only needed when passed=false)`,
             },
-          },
-          {
-            text: `You are a QA verification agent. Look at this screenshot and determine if the expected behavior was achieved.
+          ],
+        },
+      ],
+    });
 
-Expected behavior: ${expectedBehavior}
-
-Return a JSON object:
-{
-  "passed": true or false,
-  "finding": "Brief description of what you observe",
-  "severity": "high" | "medium" | "low" (only required when passed is false)
+    return VerificationSchema.parse(JSON.parse(cleanJSON(response.text || "")));
+  }, "verifyStep");
 }
 
-Return ONLY valid JSON, no markdown fences.`,
-          },
-        ],
-      },
-    ],
-  });
+export async function generateNarration(action: ComputerUseAction): Promise<string> {
+  return withRetry(async () => {
+    await waitForRateLimit(MODELS.lite);
 
-  return parseJSON(response.text ?? "", VerificationSchema);
-}
+    const desc = action.type === "click" ? `Clicking at (${action.coordinate?.[0]},${action.coordinate?.[1]})`
+      : action.type === "type" ? `Typing "${(action.text || "").slice(0, 30)}"`
+      : action.type === "scroll" ? `Scrolling ${action.direction || "down"}`
+      : action.type === "key_press" ? `Pressing ${action.key}`
+      : action.type === "navigate" ? `Navigating to ${action.url}`
+      : action.type;
 
-export async function generateNarration(action: GeminiAction): Promise<string> {
-  const response = await ai.models.generateContent({
-    model: MODEL,
-    contents: `Generate a very brief, single-sentence narration of this browser action for a live QA session log. Be concise and technical.
-Action: ${action.action}
-Target: ${action.selector || "page"}
-Value: ${action.value || "none"}
-Reasoning: ${action.reasoning}
-
-Return only the narration sentence, no quotes, no punctuation at start.`,
-  });
-
-  return (
-    response.text?.trim() ||
-    `Performing ${action.action} on ${action.selector || "page"}`
-  );
+    const r = await ai.models.generateContent({
+      model: MODELS.lite,
+      contents: `Write one brief sentence for a QA log. Action: ${desc}. Context: ${action.reasoning || "test step"}. Return ONLY the sentence.`,
+    });
+    return r.text?.trim() || desc;
+  }, "generateNarration");
 }
 
 export async function generateBugDescription(
@@ -178,39 +285,24 @@ export async function generateBugDescription(
   finding: string,
   screenshotBase64: string
 ): Promise<{ title: string; description: string }> {
-  const response = await ai.models.generateContent({
-    model: MODEL,
-    contents: [
-      {
-        role: "user",
-        parts: [
-          {
-            inlineData: {
-              mimeType: "image/jpeg",
-              data: screenshotBase64,
-            },
-          },
-          {
-            text: `You are a QA engineer writing a bug ticket. Given this failed test step and screenshot, write a clear bug title and description.
+  return withRetry(async () => {
+    await waitForRateLimit(MODELS.lite);
 
-Step: ${step.text}
-Expected: ${step.expectedBehavior}
-Finding: ${finding}
-
-Return a JSON object:
-{
-  "title": "Clear, concise bug title (max 80 chars)",
-  "description": "Detailed bug description covering: what was tested, expected vs actual behavior, steps to reproduce"
+    const r = await ai.models.generateContent({
+      model: MODELS.lite,
+      contents: [
+        {
+          role: "user",
+          parts: [
+            { inlineData: { mimeType: "image/jpeg", data: screenshotBase64 } },
+            { text: `Bug ticket. Step: "${step.text}". Expected: "${step.expectedBehavior}". Finding: "${finding}". Return JSON only: {"title":"...","description":"..."}` },
+          ],
+        },
+      ],
+    });
+    return JSON.parse(cleanJSON(r.text || ""));
+  }, "generateBugDescription");
 }
 
-Return ONLY valid JSON, no markdown fences.`,
-          },
-        ],
-      },
-    ],
-  });
-
-  const text = (response.text ?? "").replace(/^```json?\n?/, "").replace(/\n?```$/, "").trim();
-  const parsed = JSON.parse(text);
-  return { title: parsed.title, description: parsed.description };
-}
+// Legacy alias — Phase 3 code may import sendToolResponse
+export const sendToolResponse = retryAction;

@@ -2,7 +2,7 @@
 import { chromium } from "playwright";
 import type { Browser, Page } from "playwright";
 import sharp from "sharp";
-import type { GeminiAction } from "@verifai/types";
+import type { GeminiAction, ComputerUseAction } from "@verifai/types";
 
 let browser: Browser | null = null;
 let page: Page | null = null;
@@ -127,4 +127,79 @@ export async function closeBrowser(): Promise<void> {
     browser = null;
     page = null;
   }
+}
+
+export async function getCurrentUrl(): Promise<string> {
+  if (!page) throw new Error("Browser not launched");
+  return page.url();
+}
+
+export async function injectHighlightAtCoord(x: number, y: number): Promise<void> {
+  if (!page) throw new Error("Browser not launched");
+  await page.evaluate(({ x, y }: { x: number; y: number }) => {
+    document.getElementById("verifai-highlight")?.remove();
+    const d = document.createElement("div");
+    d.id = "verifai-highlight";
+    const s = 36;
+    d.style.cssText = `position:fixed;top:${y - s / 2}px;left:${x - s / 2}px;width:${s}px;height:${s}px;border:3px solid #ef4444;border-radius:50%;box-shadow:0 0 12px rgba(239,68,68,0.6),0 0 24px rgba(239,68,68,0.3);pointer-events:none;z-index:99999;`;
+    document.body.appendChild(d);
+    setTimeout(() => d.remove(), 600);
+  }, { x, y });
+  await new Promise((r) => setTimeout(r, 200));
+}
+
+export async function executeComputerAction(action: ComputerUseAction): Promise<void> {
+  if (!page) throw new Error("Browser not launched");
+
+  switch (action.type) {
+    case "click": {
+      if (!action.coordinate) throw new Error("Click requires [x,y] coordinates");
+      const [x, y] = action.coordinate;
+      await injectHighlightAtCoord(x, y);
+      await page.mouse.click(x, y);
+      break;
+    }
+    case "type": {
+      if (!action.text) throw new Error("Type requires text");
+      if (action.coordinate) {
+        const [x, y] = action.coordinate;
+        await injectHighlightAtCoord(x, y);
+        await page.mouse.click(x, y);
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      await page.keyboard.press("Control+a");
+      await page.keyboard.type(action.text, { delay: 30 });
+      break;
+    }
+    case "key_press": {
+      if (!action.key) throw new Error("key_press requires key name");
+      await page.keyboard.press(action.key);
+      break;
+    }
+    case "scroll": {
+      const d = action.direction || "down";
+      const delta = (d === "up" || d === "left") ? -300 : 300;
+      (d === "up" || d === "down") ? await page.mouse.wheel(0, delta) : await page.mouse.wheel(delta, 0);
+      break;
+    }
+    case "navigate": {
+      if (!action.url) throw new Error("Navigate requires url");
+      await page.goto(action.url, { waitUntil: "networkidle", timeout: 15000 });
+      break;
+    }
+    case "wait": {
+      await new Promise((r) => setTimeout(r, 1500));
+      break;
+    }
+    case "screenshot": break; // No-op — caller handles
+    case "drag": {
+      if (!action.coordinate) throw new Error("Drag requires coordinates");
+      await page.mouse.move(action.coordinate[0], action.coordinate[1]);
+      break;
+    }
+    default:
+      throw new Error(`Unknown action: ${(action as any).type}`);
+  }
+
+  await new Promise((r) => setTimeout(r, 300)); // Let page settle
 }

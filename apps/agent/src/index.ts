@@ -14,6 +14,8 @@ const io = new SocketIOServer(server, {
     origin: process.env.CORS_ORIGIN || "http://localhost:3000",
     methods: ["GET", "POST"],
   },
+  pingTimeout: 120000,
+  pingInterval: 25000,
 });
 
 app.use(cors());
@@ -70,4 +72,6 @@ io.on("connection", (socket) => {
 const PORT = parseInt(process.env.PORT || "3001");
 server.listen(PORT, () => {
   console.log(`[Verifai Agent] Running on port ${PORT}`);
+  console.log(`[Models] Vision:  gemini-3-flash-preview (Computer Use, 5 RPM)`);
+  console.log(`[Models] Lite:    gemini-2.5-flash-lite (verify/narrate, 10 RPM)`);
 });

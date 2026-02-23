@@ -1,39 +1,39 @@
 import type { Socket } from "socket.io";
 import type {
-  TestPlan,
-  TestStep,
-  StepStatus,
-  Bug,
-  StepStartEvent,
-  StepResultEvent,
-  ScreenshotEvent,
-  NarrationEvent,
-  SessionCompleteEvent,
+  TestPlan, TestStep, StepStatus, Bug,
+  ComputerUseAction,
+  StepStartEvent, StepResultEvent, ScreenshotEvent,
+  NarrationEvent, SessionCompleteEvent,
 } from "@verifai/types";
 import {
-  launchBrowser,
-  navigateTo,
-  takeScreenshot,
-  getAOMSnapshot,
-  injectHighlight,
-  executeAction,
-  closeBrowser,
+  launchBrowser, navigateTo, takeScreenshot, getCurrentUrl,
+  getAOMSnapshot, executeComputerAction, closeBrowser,
 } from "../lib/playwright.js";
 import {
-  decideAction,
-  verifyStep,
-  generateNarration,
-  sendToolResponse,
+  decideAction, verifyStep, generateNarration,
+  retryAction, fallbackDecideAction,
 } from "../lib/gemini.js";
 
-function timestamp(): string {
-  return new Date().toISOString();
-}
+// ─── Helpers ────────────────────────────────────────────
 
 function emitNarration(socket: Socket, text: string) {
-  const event: NarrationEvent = { type: "narration", text, timestamp: timestamp() };
-  socket.emit("event", event);
+  socket.emit("event", {
+    type: "narration",
+    text,
+    timestamp: new Date().toISOString(),
+  } as NarrationEvent);
 }
+
+function emitScreenshot(socket: Socket, stepId: string, base64: string, url: string) {
+  socket.emit("event", {
+    type: "screenshot",
+    stepId,
+    base64,
+    url,
+  } as ScreenshotEvent);
+}
+
+// ─── Main Session Runner ────────────────────────────────
 
 export async function runSession(
   socket: Socket,
@@ -42,234 +42,264 @@ export async function runSession(
   targetUrl: string
 ) {
   const bugs: Bug[] = [];
+  const bugScreenshots = new Map<string, string>();
+  const actionLog: string[] = [];
 
-  // Launch browser
-  emitNarration(socket, "[INFO] Launching browser...");
-  await launchBrowser();
-
-  // Navigate to target
-  emitNarration(socket, `[INFO] Navigating to ${targetUrl}`);
-  await navigateTo(targetUrl);
-
-  // Take initial screenshot
-  const initialScreenshot = await takeScreenshot();
-  const initScreenshotEvent: ScreenshotEvent = {
-    type: "screenshot",
-    stepId: "init",
-    base64: initialScreenshot,
-    url: targetUrl,
-  };
-  socket.emit("event", initScreenshotEvent);
-
-  for (let i = 0; i < testPlan.steps.length; i++) {
-    const step = testPlan.steps[i];
-    const stepTimeout = 30000;
-
-    const startEvent: StepStartEvent = {
-      type: "step_start",
-      stepId: step.id,
-      stepIndex: i,
-    };
-    socket.emit("event", startEvent);
-    emitNarration(
-      socket,
-      `[INFO] Step ${i + 1}/${testPlan.steps.length}: ${step.text}`
-    );
-
-    let stepStatus: StepStatus = "pending";
-
-    try {
-      const result = await Promise.race([
-        executeStep(socket, step, targetUrl),
-        new Promise<never>((_, reject) =>
-          setTimeout(
-            () => reject(new Error("Step timeout (30s)")),
-            stepTimeout
-          )
-        ),
-      ]);
-
-      stepStatus = result.status;
-      if (result.bug) bugs.push(result.bug);
-    } catch (error: unknown) {
-      stepStatus = "fail";
-      const msg = error instanceof Error ? error.message : String(error);
-      emitNarration(socket, `[ERROR] Step failed: ${msg}`);
-    }
-
-    const resultEvent: StepResultEvent = {
-      type: "step_result",
-      stepId: step.id,
-      status: stepStatus,
-      finding: stepStatus === "fail" ? "Step failed" : undefined,
-      severity: stepStatus === "fail" ? "medium" : undefined,
-    };
-    socket.emit("event", resultEvent);
-  }
-
-  await closeBrowser();
-
-  const reportId = `rpt-${sessionId}-${Date.now()}`;
-  const completeEvent: SessionCompleteEvent = {
-    type: "session_complete",
-    reportId,
-  };
-  socket.emit("event", completeEvent);
-  emitNarration(socket, "[OK] Session complete — all steps executed");
-}
-
-async function executeStep(
-  socket: Socket,
-  step: TestStep,
-  targetUrl: string
-): Promise<{ status: StepStatus; bug?: Bug }> {
-  // 1. Take screenshot
-  const screenshot = await takeScreenshot();
-  socket.emit("event", {
-    type: "screenshot",
-    stepId: step.id,
-    base64: screenshot,
-    url: targetUrl,
-  } as ScreenshotEvent);
-
-  // 2. Get AOM snapshot
-  const aom = await getAOMSnapshot();
-
-  // 3. Ask Gemini what to do
-  const action = await decideAction(screenshot, aom, step);
-  emitNarration(
-    socket,
-    `[INFO] AI decided: ${action.action}${action.selector ? ` on "${action.selector}"` : ""} — ${action.reasoning}`
-  );
-
-  // 4. Generate narration
-  const narration = await generateNarration(action);
-  emitNarration(socket, `[INFO] ${narration}`);
-
-  // 5. Inject DOM highlight for click/type actions
-  if (action.selector && (action.action === "click" || action.action === "type")) {
-    try {
-      await injectHighlight(action.selector);
-      const highlightScreenshot = await takeScreenshot();
-      socket.emit("event", {
-        type: "screenshot",
-        stepId: step.id,
-        base64: highlightScreenshot,
-        url: targetUrl,
-      } as ScreenshotEvent);
-    } catch {
-      // Highlight is cosmetic — don't fail the step
-    }
-  }
-
-  // 6. Execute the action
-  let actionError: string | null = null;
   try {
-    await executeAction(action);
-  } catch (error: unknown) {
-    actionError = error instanceof Error ? error.message : String(error);
-  }
+    // ── Launch browser ──
+    emitNarration(socket, "[INFO] Launching headless browser...");
+    await launchBrowser();
 
-  // 7. If action failed, attempt self-heal
-  if (actionError) {
-    emitNarration(socket, `[ERROR] Action failed: ${actionError}`);
-    emitNarration(socket, "[INFO] Attempting self-heal...");
+    // ── Navigate to target URL ──
+    emitNarration(socket, `[INFO] Navigating to ${targetUrl}`);
+    await navigateTo(targetUrl);
 
-    const retryScreenshot = await takeScreenshot();
-    socket.emit("event", {
-      type: "screenshot",
-      stepId: step.id,
-      base64: retryScreenshot,
-      url: targetUrl,
-    } as ScreenshotEvent);
+    // ── Send initial screenshot to frontend ──
+    const initShot = await takeScreenshot();
+    emitScreenshot(socket, "init", initShot, targetUrl);
+    emitNarration(socket, "[OK] Target application loaded");
 
-    const retryAom = await getAOMSnapshot();
-    const healAction = await sendToolResponse(actionError, retryScreenshot, retryAom, step);
+    // ── Execute each step with the VISION LOOP ──
+    for (let i = 0; i < testPlan.steps.length; i++) {
+      const step = testPlan.steps[i];
 
-    try {
-      await executeAction(healAction);
-      emitNarration(socket, "[HEALED] Recovered from error with new approach");
-
-      const verifyScreenshot = await takeScreenshot();
+      // Announce step start
       socket.emit("event", {
-        type: "screenshot",
+        type: "step_start",
         stepId: step.id,
-        base64: verifyScreenshot,
-        url: targetUrl,
-      } as ScreenshotEvent);
+        stepIndex: i,
+      } as StepStartEvent);
+      emitNarration(socket, `[INFO] Step ${i + 1}/${testPlan.steps.length}: ${step.text}`);
 
-      const verification = await verifyStep(verifyScreenshot, step.expectedBehavior);
-      if (verification.passed) {
-        emitNarration(socket, "[OK] Step verified after self-heal");
-        return { status: "healed" };
+      // Execute step with the vision loop (THIS IS THE KEY FUNCTION)
+      let result: { status: StepStatus; bug?: Bug; lastScreenshot?: string };
+      try {
+        result = await Promise.race([
+          executeStepWithVisionLoop(socket, step, actionLog),
+          new Promise<never>((_, rej) =>
+            setTimeout(() => rej(new Error("Step timeout (60s)")), 60_000)
+          ),
+        ]);
+      } catch (err: any) {
+        result = {
+          status: "fail",
+          lastScreenshot: await takeScreenshot().catch(() => ""),
+        };
+        emitNarration(socket, `[ERROR] Step failed: ${err.message}`);
       }
 
-      emitNarration(
-        socket,
-        `[ERROR] Still failing after heal: ${verification.finding}`
-      );
-      return {
-        status: "fail",
-        bug: {
-          id: `bug-${Date.now()}`,
-          stepId: step.id,
-          title: `Failed: ${step.text}`,
-          description: verification.finding,
-          severity: verification.severity ?? "medium",
-          screenshotUrl: "",
-          expectedBehavior: step.expectedBehavior,
-          actualBehavior: verification.finding,
-        },
-      };
-    } catch (retryError: unknown) {
-      const retryMsg =
-        retryError instanceof Error ? retryError.message : String(retryError);
-      emitNarration(socket, `[ERROR] Self-heal failed: ${retryMsg}`);
-      return {
-        status: "fail",
-        bug: {
-          id: `bug-${Date.now()}`,
-          stepId: step.id,
-          title: `Failed: ${step.text}`,
-          description: `Original: ${actionError}. Retry: ${retryMsg}`,
-          severity: "high",
-          screenshotUrl: "",
-          expectedBehavior: step.expectedBehavior,
-          actualBehavior: actionError,
-        },
-      };
+      // Store screenshot for failed steps (used in Phase 6 report)
+      if (result.status === "fail" && result.lastScreenshot) {
+        bugScreenshots.set(step.id, result.lastScreenshot);
+      }
+      if (result.bug) bugs.push(result.bug);
+
+      // Emit result to frontend
+      socket.emit("event", {
+        type: "step_result",
+        stepId: step.id,
+        status: result.status,
+        finding: result.bug?.actualBehavior,
+        severity: result.bug?.severity,
+      } as StepResultEvent);
+
+      actionLog.push(`Step "${step.text}" → ${result.status}`);
+    }
+
+  } catch (fatalErr: any) {
+    emitNarration(socket, `[ERROR] Fatal session error: ${fatalErr.message}`);
+    socket.emit("event", { type: "error", message: fatalErr.message });
+  } finally {
+    // ALWAYS clean up browser
+    await closeBrowser().catch(() => {});
+  }
+
+  // Session complete
+  // TODO Phase 6: compileAndSaveReport(sessionId, testPlan, bugs, bugScreenshots)
+  const reportId = `rpt-${Date.now()}`;
+  socket.emit("event", { type: "session_complete", reportId } as SessionCompleteEvent);
+  emitNarration(socket, `[OK] Session complete — ${bugs.length} bug(s) found`);
+}
+
+// ─── THE VISION LOOP ────────────────────────────────────
+//
+// This is the CORRECT architecture. For each test step:
+//   1. Screenshot current state
+//   2. Send to Gemini vision → get action
+//   3. Execute action in browser
+//   4. Screenshot again → verify with Gemini
+//
+// Gemini SEES the browser before EVERY decision.
+// Playwright only executes — it never decides.
+//
+// ─────────────────────────────────────────────────────────
+
+async function executeStepWithVisionLoop(
+  socket: Socket,
+  step: TestStep,
+  actionLog: string[],
+): Promise<{ status: StepStatus; bug?: Bug; lastScreenshot?: string }> {
+
+  const MAX_ACTIONS_PER_STEP = 3; // Prevent infinite loops
+  let lastScreenshot = "";
+  let wasHealed = false;
+
+  for (let actionNum = 0; actionNum < MAX_ACTIONS_PER_STEP; actionNum++) {
+
+    // ┌──────────────────────────────────────────────┐
+    // │ 1. OBSERVE — Screenshot + Accessibility Tree │
+    // └──────────────────────────────────────────────┘
+    const screenshot = await takeScreenshot();
+    lastScreenshot = screenshot;
+    const currentUrl = await getCurrentUrl();
+    emitScreenshot(socket, step.id, screenshot, currentUrl);
+
+    const aom = await getAOMSnapshot();
+
+    // ┌──────────────────────────────────────────────┐
+    // │ 2. THINK — Send to Gemini vision model       │
+    // │    Gemini SEES the screenshot and decides     │
+    // │    what action to take next                   │
+    // └──────────────────────────────────────────────┘
+    let action: ComputerUseAction;
+    try {
+      action = await decideAction(screenshot, aom, step, actionLog);
+    } catch (visionErr: any) {
+      // Vision model failed (probably rate limited) — try lite fallback
+      emitNarration(socket, `[INFO] Vision model unavailable (${visionErr.message}), trying fallback...`);
+      try {
+        action = await fallbackDecideAction(screenshot, aom, step);
+      } catch (fallbackErr: any) {
+        emitNarration(socket, `[ERROR] All models failed: ${fallbackErr.message}`);
+        if (actionNum < MAX_ACTIONS_PER_STEP - 1) continue; // Retry on next iteration
+        break; // Give up, go to verification
+      }
+    }
+
+    // ┌──────────────────────────────────────────────┐
+    // │ 2b. Check if step is already done            │
+    // └──────────────────────────────────────────────┘
+    if (action.type === "screenshot" && action.reasoning?.toLowerCase().includes("complete")) {
+      emitNarration(socket, "[INFO] AI sees the expected outcome is already on screen");
+      break; // Skip to verification
+    }
+
+    // ┌──────────────────────────────────────────────┐
+    // │ 3. LOG — Tell the frontend what we're doing  │
+    // └──────────────────────────────────────────────┘
+    const actionDesc = formatAction(action);
+    emitNarration(socket, `[INFO] Action: ${actionDesc}`);
+
+    // Fire-and-forget narration (non-critical, uses lite model)
+    generateNarration(action)
+      .then((n) => emitNarration(socket, `[INFO] ${n}`))
+      .catch(() => {});
+
+    // ┌──────────────────────────────────────────────┐
+    // │ 4. ACT — Playwright executes the action      │
+    // └──────────────────────────────────────────────┘
+    let actionError: string | null = null;
+    try {
+      await executeComputerAction(action);
+    } catch (err: any) {
+      actionError = err.message;
+    }
+
+    // ┌──────────────────────────────────────────────┐
+    // │ 5. SELF-HEAL — If action failed, retry once  │
+    // └──────────────────────────────────────────────┘
+    if (actionError) {
+      emitNarration(socket, `[ERROR] Action failed: ${actionError}`);
+
+      if (actionNum < MAX_ACTIONS_PER_STEP - 1) {
+        emitNarration(socket, "[INFO] Attempting self-heal...");
+
+        // Take new screenshot AFTER the failure
+        const healShot = await takeScreenshot();
+        emitScreenshot(socket, step.id, healShot, await getCurrentUrl());
+        const healAom = await getAOMSnapshot();
+
+        try {
+          // Ask Gemini to try a different approach
+          const healAction = await retryAction(actionError, healShot, healAom, step);
+          await executeComputerAction(healAction);
+          emitNarration(socket, "[HEALED] Recovered with new approach");
+          wasHealed = true;
+          actionLog.push(`Self-healed: ${formatAction(healAction)}`);
+          await new Promise((r) => setTimeout(r, 500));
+          break; // Healed — skip to verification
+        } catch (healErr: any) {
+          emitNarration(socket, `[ERROR] Self-heal failed: ${healErr.message}`);
+          // Continue loop — next iteration will take fresh screenshot
+        }
+      }
+    } else {
+      // Action succeeded
+      actionLog.push(actionDesc);
+      await new Promise((r) => setTimeout(r, 500)); // Let page settle
+      break; // Go to verification
     }
   }
 
-  // 8. Action succeeded — wait for page to settle, then verify
+  // ┌──────────────────────────────────────────────────┐
+  // │ 6. VERIFY — Take final screenshot, ask Gemini   │
+  // │    Lite model if the expected behavior happened  │
+  // └──────────────────────────────────────────────────┘
   await new Promise((r) => setTimeout(r, 500));
-  const verifyScreenshot = await takeScreenshot();
-  socket.emit("event", {
-    type: "screenshot",
-    stepId: step.id,
-    base64: verifyScreenshot,
-    url: targetUrl,
-  } as ScreenshotEvent);
+  const verifyShot = await takeScreenshot();
+  lastScreenshot = verifyShot;
+  emitScreenshot(socket, step.id, verifyShot, await getCurrentUrl());
 
-  // 9. Gemini verification
-  const verification = await verifyStep(verifyScreenshot, step.expectedBehavior);
-  if (verification.passed) {
-    emitNarration(socket, `[OK] Step passed: ${verification.finding}`);
-    return { status: "pass" };
+  try {
+    const v = await verifyStep(verifyShot, step.expectedBehavior);
+
+    if (v.passed) {
+      emitNarration(socket, `[OK] Step passed: ${v.finding}`);
+      return { status: wasHealed ? "healed" : "pass", lastScreenshot };
+    } else {
+      emitNarration(socket, `[ERROR] Verification failed: ${v.finding}`);
+      return {
+        status: "fail",
+        lastScreenshot,
+        bug: {
+          id: `bug-${Date.now()}`,
+          stepId: step.id,
+          title: `Failed: ${step.text}`,
+          description: v.finding,
+          severity: v.severity || "medium",
+          screenshotUrl: "",
+          expectedBehavior: step.expectedBehavior,
+          actualBehavior: v.finding,
+        },
+      };
+    }
+  } catch (verifyErr: any) {
+    emitNarration(socket, `[ERROR] Verification error: ${verifyErr.message}`);
+    return {
+      status: "fail",
+      lastScreenshot,
+      bug: {
+        id: `bug-${Date.now()}`,
+        stepId: step.id,
+        title: `Unverified: ${step.text}`,
+        description: `Verification model error: ${verifyErr.message}`,
+        severity: "medium",
+        screenshotUrl: "",
+        expectedBehavior: step.expectedBehavior,
+        actualBehavior: "Verification failed — model error",
+      },
+    };
   }
+}
 
-  emitNarration(socket, `[ERROR] Verification failed: ${verification.finding}`);
-  return {
-    status: "fail",
-    bug: {
-      id: `bug-${Date.now()}`,
-      stepId: step.id,
-      title: `Failed: ${step.text}`,
-      description: verification.finding,
-      severity: verification.severity ?? "medium",
-      screenshotUrl: "",
-      expectedBehavior: step.expectedBehavior,
-      actualBehavior: verification.finding,
-    },
-  };
+// ─── Format action for logging ──────────────────────────
+
+function formatAction(action: ComputerUseAction): string {
+  const parts = [action.type];
+  if (action.coordinate) parts.push(`at (${action.coordinate[0]},${action.coordinate[1]})`);
+  if (action.text) parts.push(`"${action.text.slice(0, 30)}"`);
+  if (action.key) parts.push(action.key);
+  if (action.direction) parts.push(action.direction);
+  if (action.url) parts.push(action.url);
+  return parts.join(" ");
 }

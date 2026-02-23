@@ -127,3 +127,21 @@ export interface GeminiVerification {
   finding: string;
   severity?: BugSeverity;
 }
+
+// ─── Computer Use Actions (Gemini 3 Flash native tool) ──
+export interface ComputerUseAction {
+  type: "click" | "type" | "scroll" | "wait" | "screenshot" | "navigate" | "key_press" | "drag";
+  coordinate?: [number, number];     // [x, y] pixel coordinates
+  text?: string;                     // For type actions
+  key?: string;                      // For key_press (e.g., "Enter", "Tab")
+  url?: string;                      // For navigate actions
+  direction?: "up" | "down" | "left" | "right";
+  reasoning?: string;
+}
+
+// ─── Model Configuration ────────────────────────────────
+export interface ModelConfig {
+  vision: string;
+  lite: string;
+  tts?: string;
+}
