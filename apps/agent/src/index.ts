@@ -32,6 +32,15 @@ const sessions = new Map<string, { status: string; startedAt: string }>();
 io.on("connection", (socket) => {
   console.log(`[Socket] Client connected: ${socket.id}`);
 
+  // Per-connection skip signal — shared between event handler and running session
+  const skipSignal = new Set<string>();
+
+  socket.on("session:skip_step", (data: { stepId: string }) => {
+    console.log(`[Session] Skip requested for step: ${data.stepId}`);
+    skipSignal.add(data.stepId);
+  });
+
+  // ── Full session start ──────────────────────────────
   socket.on(
     "session:start",
     async (data: { testPlan: TestPlan; targetUrl: string }) => {
@@ -44,7 +53,7 @@ io.on("connection", (socket) => {
       console.log(`[Session] Starting ${sessionId} for ${data.targetUrl}`);
 
       try {
-        await runSession(socket, sessionId, data.testPlan, data.targetUrl);
+        await runSession(socket, sessionId, data.testPlan, data.targetUrl, skipSignal);
         sessions.set(sessionId, {
           status: "complete",
           startedAt: sessions.get(sessionId)!.startedAt,
@@ -56,6 +65,43 @@ io.on("connection", (socket) => {
           type: "error",
           message: msg || "Session failed unexpectedly",
         });
+        sessions.set(sessionId, {
+          status: "error",
+          startedAt: sessions.get(sessionId)!.startedAt,
+        });
+      }
+    }
+  );
+
+  // ── Retry only the skipped steps ────────────────────
+  socket.on(
+    "session:retry_skipped",
+    async (data: { testPlan: TestPlan; targetUrl: string; skippedStepIds: string[] }) => {
+      const sessionId = `retry-${Date.now()}`;
+      sessions.set(sessionId, {
+        status: "running",
+        startedAt: new Date().toISOString(),
+      });
+
+      console.log(`[Session] Retrying ${data.skippedStepIds.length} skipped steps for ${data.targetUrl}`);
+
+      try {
+        // Build a filtered plan with only the steps that were skipped
+        const retryPlan: TestPlan = {
+          ...data.testPlan,
+          steps: data.testPlan.steps
+            .filter((s) => data.skippedStepIds.includes(s.id))
+            .map((s) => ({ ...s, status: "pending" as const })),
+        };
+        await runSession(socket, sessionId, retryPlan, data.targetUrl, skipSignal);
+        sessions.set(sessionId, {
+          status: "complete",
+          startedAt: sessions.get(sessionId)!.startedAt,
+        });
+      } catch (error: unknown) {
+        const msg = error instanceof Error ? error.message : String(error);
+        console.error(`[Session] Retry error in ${sessionId}:`, error);
+        socket.emit("event", { type: "error", message: msg });
         sessions.set(sessionId, {
           status: "error",
           startedAt: sessions.get(sessionId)!.startedAt,

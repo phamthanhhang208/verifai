@@ -4,6 +4,50 @@ import type { Browser, Page } from "playwright";
 import sharp from "sharp";
 import type { GeminiAction, ComputerUseAction } from "@verifai/types";
 
+// ─── Timeouts (configurable via env) ────────────────────
+const PLAYWRIGHT_NAV_TIMEOUT_MS = parseInt(process.env.PLAYWRIGHT_NAVIGATION_TIMEOUT_MS || "15000");
+
+// ─── Typed error for Playwright failures ─────────────────
+// Carries incompleteReason so session.ts can mark steps without coupling
+// Playwright internals to the session layer.
+export class PlaywrightActionError extends Error {
+  readonly incompleteReason: "timeout" | "crash";
+  readonly isNavigation: boolean;
+
+  constructor(
+    message: string,
+    opts: { incompleteReason: "timeout" | "crash"; isNavigation?: boolean }
+  ) {
+    super(message);
+    this.name = "PlaywrightActionError";
+    this.incompleteReason = opts.incompleteReason;
+    this.isNavigation = opts.isNavigation ?? false;
+  }
+}
+
+function classifyPlaywrightError(err: any, isNavigation = false): PlaywrightActionError {
+  const msg: string = err?.message || String(err);
+
+  // Network / connectivity errors → crash (environment issue, not a product bug)
+  if (
+    msg.includes("ERR_CONNECTION_REFUSED") ||
+    msg.includes("net::ERR_") ||
+    msg.includes("ECONNREFUSED") ||
+    msg.includes("ERR_NAME_NOT_RESOLVED") ||
+    msg.includes("ERR_INTERNET_DISCONNECTED")
+  ) {
+    return new PlaywrightActionError(msg, { incompleteReason: "crash", isNavigation });
+  }
+
+  // Playwright TimeoutError → timeout
+  if (err?.name === "TimeoutError" || msg.toLowerCase().includes("timeout")) {
+    return new PlaywrightActionError(msg, { incompleteReason: "timeout", isNavigation });
+  }
+
+  // Default for other unexpected Playwright errors
+  return new PlaywrightActionError(msg, { incompleteReason: "crash", isNavigation });
+}
+
 let browser: Browser | null = null;
 let page: Page | null = null;
 
@@ -20,7 +64,11 @@ export async function launchBrowser(): Promise<void> {
 
 export async function navigateTo(url: string): Promise<void> {
   if (!page) throw new Error("Browser not launched");
-  await page.goto(url, { waitUntil: "networkidle", timeout: 15000 });
+  try {
+    await page.goto(url, { waitUntil: "networkidle", timeout: PLAYWRIGHT_NAV_TIMEOUT_MS });
+  } catch (err: any) {
+    throw classifyPlaywrightError(err, true);
+  }
 }
 
 export async function takeScreenshot(): Promise<string> {
@@ -184,7 +232,11 @@ export async function executeComputerAction(action: ComputerUseAction): Promise<
     }
     case "navigate": {
       if (!action.url) throw new Error("Navigate requires url");
-      await page.goto(action.url, { waitUntil: "networkidle", timeout: 15000 });
+      try {
+        await page.goto(action.url, { waitUntil: "networkidle", timeout: PLAYWRIGHT_NAV_TIMEOUT_MS });
+      } catch (err: any) {
+        throw classifyPlaywrightError(err, true);
+      }
       break;
     }
     case "wait": {

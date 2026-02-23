@@ -21,12 +21,12 @@ function formatTimestamp(iso: string): string {
 function classifyNarration(text: string): TranscriptLine["type"] {
   if (text.includes("[ERROR]")) return "error";
   if (text.includes("[OK]")) return "success";
-  if (text.includes("[HEALED]")) return "healed";
+  if (text.includes("[WARN]") || text.includes("[TIMEOUT]")) return "warning";
   return "info";
 }
 
 function stripPrefix(text: string): string {
-  return text.replace(/^\[(ERROR|OK|HEALED|INFO)\]\s*/, "");
+  return text.replace(/^\[(ERROR|OK|INFO|WARN|TIMEOUT)\]\s*/, "");
 }
 
 export default function Home() {
@@ -40,28 +40,11 @@ export default function Home() {
   const [currentUrl, setCurrentUrl] = useState("about:blank");
   const [transcriptLines, setTranscriptLines] = useState<TranscriptLine[]>([]);
   const [reportId, setReportId] = useState<string | null>(null);
+  const [incompleteStepIds, setIncompleteStepIds] = useState<string[]>([]);
+  const [userIncompleteStepIds, setUserIncompleteStepIds] = useState<string[]>([]);
 
-  const handleConfigure = async (source: string, targetUrl: string) => {
-    setIsLoading(true);
-    // Phase 3 TODO: call real Jira/spec parsing API here
-    await new Promise((resolve) => setTimeout(resolve, 2000));
-    setTestPlan({ ...mockTestPlan, sourceTicket: source, targetUrl });
-    setCurrentUrl(targetUrl);
-    setIsLoading(false);
-    setCurrentScreen(2);
-  };
-
-  const handleRunSession = () => {
-    if (!testPlan || isRunning) return;
-    setIsRunning(true);
-    setTranscriptLines([]);
-    setCurrentScreenshot(null);
-
-    const agentUrl =
-      process.env.NEXT_PUBLIC_AGENT_URL || "http://localhost:3001";
-
-    socket.connect(agentUrl);
-
+  // Shared socket event handler — used by both initial run and retry
+  const attachSocketHandler = () => {
     socket.onEvent((event) => {
       switch (event.type) {
         case "step_start":
@@ -82,10 +65,20 @@ export default function Home() {
             return {
               ...prev,
               steps: prev.steps.map((s) =>
-                s.id === event.stepId ? { ...s, status: event.status } : s
+                s.id === event.stepId
+                  ? {
+                      ...s,
+                      status: event.status,
+                      incompleteReason: event.incompleteReason,
+                      failureType: event.failureType,
+                    }
+                  : s
               ),
             };
           });
+          if (event.status === "incomplete") {
+            setIncompleteStepIds((prev) => [...prev, event.stepId]);
+          }
           break;
 
         case "screenshot":
@@ -125,10 +118,93 @@ export default function Home() {
           break;
       }
     });
+  };
 
-    socket.emit("session:start", {
+  const handleConfigure = async (source: string, targetUrl: string) => {
+    setIsLoading(true);
+    // Phase 3 TODO: call real Jira/spec parsing API here
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    setTestPlan({ ...mockTestPlan, sourceTicket: source, targetUrl });
+    setCurrentUrl(targetUrl);
+    setIsLoading(false);
+    setCurrentScreen(2);
+  };
+
+  const handleRunSession = () => {
+    if (!testPlan || isRunning) return;
+    setIsRunning(true);
+    setIsComplete(false);
+    setIncompleteStepIds([]);
+    setTranscriptLines([]);
+    setCurrentScreenshot(null);
+
+    const agentUrl = process.env.NEXT_PUBLIC_AGENT_URL || "http://localhost:3001";
+    socket.connect(agentUrl);
+    attachSocketHandler();
+    socket.emit("session:start", { testPlan, targetUrl: testPlan.targetUrl });
+  };
+
+  const handleSkipStep = (stepId: string) => {
+    setUserIncompleteStepIds((prev) => [...prev, stepId]);
+    socket.emit("session:skip_step", { stepId });
+  };
+
+  const handleRetryStep = (stepId: string) => {
+    if (!testPlan || isRunning) return;
+
+    setTestPlan((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        steps: prev.steps.map((s) =>
+          s.id === stepId ? { ...s, status: "pending" as const, incompleteReason: undefined } : s
+        ),
+      };
+    });
+
+    setIsRunning(true);
+    setIsComplete(false);
+    setIncompleteStepIds((prev) => prev.filter((id) => id !== stepId));
+    setTranscriptLines([]);
+    setCurrentScreenshot(null);
+
+    const agentUrl = process.env.NEXT_PUBLIC_AGENT_URL || "http://localhost:3001";
+    socket.connect(agentUrl);
+    attachSocketHandler();
+    socket.emit("session:retry_skipped", {
       testPlan,
       targetUrl: testPlan.targetUrl,
+      skippedStepIds: [stepId],
+    });
+  };
+
+  const handleRetryIncomplete = () => {
+    if (!testPlan || incompleteStepIds.length === 0 || isRunning) return;
+
+    setTestPlan((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        steps: prev.steps.map((s) =>
+          incompleteStepIds.includes(s.id)
+            ? { ...s, status: "pending" as const, incompleteReason: undefined }
+            : s
+        ),
+      };
+    });
+
+    setIsRunning(true);
+    setIsComplete(false);
+    setIncompleteStepIds([]);
+    setCurrentScreen(2);
+
+    const agentUrl = process.env.NEXT_PUBLIC_AGENT_URL || "http://localhost:3001";
+    socket.connect(agentUrl);
+    attachSocketHandler();
+    socket.emit("session:retry_skipped", {
+      testPlan,
+      targetUrl: testPlan.targetUrl,
+      skippedStepIds: incompleteStepIds,
     });
   };
 
@@ -151,6 +227,8 @@ export default function Home() {
     setCurrentScreenshot(null);
     setCurrentUrl("about:blank");
     setTranscriptLines([]);
+    setIncompleteStepIds([]);
+    setUserIncompleteStepIds([]);
   };
 
   return (
@@ -166,16 +244,25 @@ export default function Home() {
           testPlan={testPlan}
           onRunSession={handleRunSession}
           onViewReport={handleViewReport}
+          onRetryIncomplete={handleRetryIncomplete}
+          onSkipStep={handleSkipStep}
+          onRetryStep={handleRetryStep}
+          userIncompleteStepIds={userIncompleteStepIds}
           isRunning={isRunning}
           isComplete={isComplete}
           currentScreenshot={currentScreenshot}
           currentUrl={currentUrl}
           transcriptLines={transcriptLines}
+          incompleteStepIds={incompleteStepIds}
         />
       )}
 
       {currentScreen === 3 && report && (
-        <ResultsScreen report={report} onNewRun={handleNewRun} />
+        <ResultsScreen
+          report={report}
+          onNewRun={handleNewRun}
+          onRetryIncomplete={handleRetryIncomplete}
+        />
       )}
     </div>
   );

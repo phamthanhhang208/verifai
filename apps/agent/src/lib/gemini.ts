@@ -1,7 +1,7 @@
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenAI, Environment } from "@google/genai";
 import { z } from "zod";
 import type { ComputerUseAction, GeminiVerification, TestStep } from "@verifai/types";
-import { MODELS, waitForRateLimit, withRetry } from "./models.js";
+import { MODELS, callGeminiWithBackoff, waitForRateLimit, withRetry } from "./models.js";
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
 
@@ -15,6 +15,14 @@ function cleanJSON(text: string): string {
   return text.replace(/^```json?\n?/g, "").replace(/\n?```$/g, "").trim();
 }
 
+// ─── Call context passed from the session layer ──────────
+// Carries the socket so callGeminiWithBackoff can emit [WARN] narrations.
+
+export interface GeminiCallContext {
+  socket: any;
+  abortSignal?: { aborted: boolean };
+}
+
 // ════════════════════════════════════════════════════════
 // VISION MODEL — Gemini 3 Flash + Computer Use (5 RPM)
 // This is the CORE of the agent — it SEES the browser and
@@ -25,11 +33,10 @@ export async function decideAction(
   screenshotBase64: string,
   aomSnapshot: string,
   step: TestStep,
-  previousActions: string[] = []
+  previousActions: string[] = [],
+  ctx?: GeminiCallContext
 ): Promise<ComputerUseAction> {
-  return withRetry(async () => {
-    await waitForRateLimit(MODELS.vision);
-
+  const callFn = async () => {
     const prevContext = previousActions.length > 0
       ? `\nPrevious actions this session:\n${previousActions.slice(-5).join("\n")}`
       : "";
@@ -72,16 +79,21 @@ INSTRUCTIONS:
       config: {
         tools: [{
           computerUse: {
-            environment: {
-              width: 1280,
-              height: 720,
-            },
+            environment: Environment.ENVIRONMENT_BROWSER,
           },
         }],
       },
     });
 
     return parseComputerUseResponse(response);
+  };
+
+  if (ctx) {
+    return callGeminiWithBackoff(callFn, { model: MODELS.vision, socket: ctx.socket, abortSignal: ctx.abortSignal });
+  }
+  return withRetry(async () => {
+    await waitForRateLimit(MODELS.vision);
+    return callFn();
   }, "decideAction");
 }
 
@@ -89,11 +101,10 @@ export async function retryAction(
   errorString: string,
   screenshotBase64: string,
   aomSnapshot: string,
-  step: TestStep
+  step: TestStep,
+  ctx?: GeminiCallContext
 ): Promise<ComputerUseAction> {
-  return withRetry(async () => {
-    await waitForRateLimit(MODELS.vision);
-
+  const callFn = async () => {
     const response = await ai.models.generateContent({
       model: MODELS.vision,
       contents: [
@@ -117,13 +128,21 @@ Look at the screenshot carefully. Try a DIFFERENT approach — different coordin
         },
       ],
       config: {
-        tools: [{ computerUse: { environment: { width: 1280, height: 720 } } }],
+        tools: [{ computerUse: { environment: Environment.ENVIRONMENT_BROWSER } }],
       },
     });
 
     const action = parseComputerUseResponse(response);
     action.reasoning = `Self-heal: ${action.reasoning || "retrying differently"}`;
     return action;
+  };
+
+  if (ctx) {
+    return callGeminiWithBackoff(callFn, { model: MODELS.vision, socket: ctx.socket, abortSignal: ctx.abortSignal });
+  }
+  return withRetry(async () => {
+    await waitForRateLimit(MODELS.vision);
+    return callFn();
   }, "retryAction");
 }
 
@@ -131,11 +150,10 @@ Look at the screenshot carefully. Try a DIFFERENT approach — different coordin
 export async function fallbackDecideAction(
   screenshotBase64: string,
   aomSnapshot: string,
-  step: TestStep
+  step: TestStep,
+  ctx?: GeminiCallContext
 ): Promise<ComputerUseAction> {
-  return withRetry(async () => {
-    await waitForRateLimit(MODELS.lite);
-
+  const callFn = async () => {
     const response = await ai.models.generateContent({
       model: MODELS.lite,
       contents: [
@@ -170,6 +188,14 @@ For type: include "text" field. For key_press: include "key" field. For scroll: 
       url: parsed.url,
       reasoning: `[Fallback] ${parsed.reasoning || "lite model decision"}`,
     } as ComputerUseAction;
+  };
+
+  if (ctx) {
+    return callGeminiWithBackoff(callFn, { model: MODELS.lite, socket: ctx.socket, abortSignal: ctx.abortSignal });
+  }
+  return withRetry(async () => {
+    await waitForRateLimit(MODELS.lite);
+    return callFn();
   }, "fallbackDecideAction");
 }
 
@@ -232,11 +258,10 @@ function parseComputerUseResponse(response: any): ComputerUseAction {
 
 export async function verifyStep(
   screenshotBase64: string,
-  expectedBehavior: string
+  expectedBehavior: string,
+  ctx?: GeminiCallContext
 ): Promise<GeminiVerification> {
-  return withRetry(async () => {
-    await waitForRateLimit(MODELS.lite);
-
+  const callFn = async () => {
     const response = await ai.models.generateContent({
       model: MODELS.lite,
       contents: [
@@ -258,36 +283,52 @@ Return ONLY JSON, no markdown: {"passed":true/false,"finding":"what you see","se
     });
 
     return VerificationSchema.parse(JSON.parse(cleanJSON(response.text || "")));
+  };
+
+  if (ctx) {
+    return callGeminiWithBackoff(callFn, { model: MODELS.lite, socket: ctx.socket, abortSignal: ctx.abortSignal });
+  }
+  return withRetry(async () => {
+    await waitForRateLimit(MODELS.lite);
+    return callFn();
   }, "verifyStep");
 }
 
-export async function generateNarration(action: ComputerUseAction): Promise<string> {
-  return withRetry(async () => {
-    await waitForRateLimit(MODELS.lite);
+export async function generateNarration(
+  action: ComputerUseAction,
+  ctx?: GeminiCallContext
+): Promise<string> {
+  const desc = action.type === "click" ? `Clicking at (${action.coordinate?.[0]},${action.coordinate?.[1]})`
+    : action.type === "type" ? `Typing "${(action.text || "").slice(0, 30)}"`
+    : action.type === "scroll" ? `Scrolling ${action.direction || "down"}`
+    : action.type === "key_press" ? `Pressing ${action.key}`
+    : action.type === "navigate" ? `Navigating to ${action.url}`
+    : action.type;
 
-    const desc = action.type === "click" ? `Clicking at (${action.coordinate?.[0]},${action.coordinate?.[1]})`
-      : action.type === "type" ? `Typing "${(action.text || "").slice(0, 30)}"`
-      : action.type === "scroll" ? `Scrolling ${action.direction || "down"}`
-      : action.type === "key_press" ? `Pressing ${action.key}`
-      : action.type === "navigate" ? `Navigating to ${action.url}`
-      : action.type;
-
+  const callFn = async () => {
     const r = await ai.models.generateContent({
       model: MODELS.lite,
       contents: `Write one brief sentence for a QA log. Action: ${desc}. Context: ${action.reasoning || "test step"}. Return ONLY the sentence.`,
     });
     return r.text?.trim() || desc;
+  };
+
+  if (ctx) {
+    return callGeminiWithBackoff(callFn, { model: MODELS.lite, socket: ctx.socket, abortSignal: ctx.abortSignal });
+  }
+  return withRetry(async () => {
+    await waitForRateLimit(MODELS.lite);
+    return callFn();
   }, "generateNarration");
 }
 
 export async function generateBugDescription(
   step: TestStep,
   finding: string,
-  screenshotBase64: string
+  screenshotBase64: string,
+  ctx?: GeminiCallContext
 ): Promise<{ title: string; description: string }> {
-  return withRetry(async () => {
-    await waitForRateLimit(MODELS.lite);
-
+  const callFn = async () => {
     const r = await ai.models.generateContent({
       model: MODELS.lite,
       contents: [
@@ -301,6 +342,14 @@ export async function generateBugDescription(
       ],
     });
     return JSON.parse(cleanJSON(r.text || ""));
+  };
+
+  if (ctx) {
+    return callGeminiWithBackoff(callFn, { model: MODELS.lite, socket: ctx.socket, abortSignal: ctx.abortSignal });
+  }
+  return withRetry(async () => {
+    await waitForRateLimit(MODELS.lite);
+    return callFn();
   }, "generateBugDescription");
 }
 

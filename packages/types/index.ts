@@ -1,5 +1,22 @@
 // ─── Step & Plan ───────────────────────────────────────
-export type StepStatus = "pending" | "running" | "pass" | "fail" | "healed";
+
+/** Tri-state step model:
+ *  passed     — step executed and verified successfully
+ *  failed     — Gemini verification says the expected behaviour didn't happen (real bug)
+ *  incomplete — step could not be assessed due to infrastructure (rate limit, timeout, crash)
+ */
+export type StepStatus = "pending" | "running" | "passed" | "failed" | "incomplete";
+
+/** Why a step could not complete — only set when status === "incomplete" */
+export type IncompleteReason =
+  | "rate_limit"  // Gemini 429 — model quota exhausted
+  | "timeout"     // Playwright navigation/action timeout
+  | "crash";      // Unexpected agent error or 60s step timer exceeded
+
+/** Why a failed step failed — only set when status === "failed" */
+export type FailureType =
+  | "assertion"   // Gemini verification says expected outcome didn't occur
+  | "timeout";    // Playwright wait timed out (counts as a product bug)
 
 export interface TestStep {
   id: string;
@@ -7,6 +24,8 @@ export interface TestStep {
   expectedBehavior: string;
   targetElement?: string;
   status: StepStatus;
+  incompleteReason?: IncompleteReason; // set when status === "incomplete"
+  failureType?: FailureType;           // set when status === "failed"
 }
 
 export interface TestPlan {
@@ -29,9 +48,17 @@ export interface Bug {
   screenshotUrl: string;
   expectedBehavior: string;
   actualBehavior: string;
+  failureType?: FailureType;
   jiraTicketUrl?: string;
   jiraTicketKey?: string;
 }
+
+/** Overall session outcome:
+ *  passed     — all steps passed, zero bugs
+ *  failed     — one or more steps failed (bugs found)
+ *  incomplete — no failures but some steps couldn't run (infrastructure issues)
+ */
+export type ReportStatus = "passed" | "failed" | "incomplete";
 
 export interface BugReport {
   id: string;
@@ -40,11 +67,14 @@ export interface BugReport {
   targetUrl: string;
   steps: TestStep[];
   bugs: Bug[];
+  reportStatus: ReportStatus;
   totalSteps: number;
   passedSteps: number;
   failedSteps: number;
-  healedSteps: number;
-  passRate: number;
+  completedSteps: number;  // passedSteps + failedSteps (steps that actually ran)
+  incompleteSteps: number; // steps that could not be assessed
+  passRate: number;        // passedSteps / completedSteps * 100
+  summary: string;         // human-readable one-liner
   createdAt: string;
   completedAt: string;
 }
@@ -71,6 +101,8 @@ export interface StepResultEvent {
   status: StepStatus;
   finding?: string;
   severity?: BugSeverity;
+  failureType?: FailureType;
+  incompleteReason?: IncompleteReason;
 }
 
 export interface ScreenshotEvent {
