@@ -1,0 +1,14 @@
+{
+  "name": "verifai",
+  "private": true,
+  "workspaces": ["apps/*", "packages/*"],
+  "scripts": {
+    "dev": "turbo dev",
+    "build": "turbo build",
+    "lint": "turbo lint"
+  },
+  "devDependencies": {
+    "turbo": "^2.5.0"
+  },
+  "packageManager": "npm@10.0.0"
+}

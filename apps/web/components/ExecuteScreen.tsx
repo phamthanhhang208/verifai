@@ -1,0 +1,328 @@
+"use client";
+
+import { useEffect, useRef, useState } from "react";
+import {
+  Circle,
+  CheckCircle2,
+  XCircle,
+  Loader2,
+  Play,
+  Terminal,
+  Monitor,
+  Mic,
+} from "lucide-react";
+import { cn } from "@/lib/utils";
+import type { TestPlan, StepStatus } from "@verifai/types";
+
+export type TranscriptLine = {
+  text: string;
+  timestamp: string;
+  type: "info" | "error" | "success" | "healed";
+};
+
+interface ExecuteScreenProps {
+  testPlan: TestPlan;
+  onRunSession: () => void;
+  onViewReport: () => void;
+  isRunning: boolean;
+  isComplete: boolean;
+  currentScreenshot: string | null;
+  currentUrl: string;
+  transcriptLines: TranscriptLine[];
+}
+
+function StatusIcon({ status }: { status: StepStatus }) {
+  switch (status) {
+    case "pending":
+      return <Circle className="w-4 h-4 text-gray-600 shrink-0 mt-0.5" />;
+    case "running":
+      return <Loader2 className="w-4 h-4 text-indigo-500 shrink-0 mt-0.5 animate-spin" />;
+    case "pass":
+      return <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0 mt-0.5" />;
+    case "fail":
+      return <XCircle className="w-4 h-4 text-rose-500 shrink-0 mt-0.5" />;
+    case "healed":
+      return <CheckCircle2 className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />;
+  }
+}
+
+const TRANSCRIPT_PREFIX: Record<TranscriptLine["type"], string> = {
+  info: "",
+  error: "[ERROR] ",
+  success: "[OK] ",
+  healed: "[HEALED] ",
+};
+
+const TRANSCRIPT_COLOR: Record<TranscriptLine["type"], string> = {
+  info: "text-gray-300",
+  error: "text-rose-400",
+  success: "text-emerald-400",
+  healed: "text-amber-400",
+};
+
+const SIDEBAR_MIN = 180;
+const SIDEBAR_MAX = 560;
+const TRANSCRIPT_MIN = 80;
+const TRANSCRIPT_MAX = 480;
+
+export default function ExecuteScreen({
+  testPlan,
+  onRunSession,
+  onViewReport,
+  isRunning,
+  isComplete,
+  currentScreenshot,
+  currentUrl,
+  transcriptLines,
+}: ExecuteScreenProps) {
+  const transcriptEndRef = useRef<HTMLDivElement>(null);
+  const [stepTexts, setStepTexts] = useState<Record<string, string>>(
+    () => testPlan.steps.reduce((acc, s) => ({ ...acc, [s.id]: s.text }), {} as Record<string, string>)
+  );
+
+  // Resizable panels
+  const [sidebarWidth, setSidebarWidth] = useState(320);
+  const [transcriptHeight, setTranscriptHeight] = useState(192);
+
+  useEffect(() => {
+    transcriptEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [transcriptLines]);
+
+  const isEditable = !isRunning && !isComplete;
+  const activeStepId = testPlan.steps.find((s) => s.status === "running")?.id;
+
+  const startSidebarResize = (e: React.MouseEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startWidth = sidebarWidth;
+
+    const onMouseMove = (ev: MouseEvent) => {
+      const next = Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, startWidth + ev.clientX - startX));
+      setSidebarWidth(next);
+    };
+    const onMouseUp = () => {
+      document.removeEventListener("mousemove", onMouseMove);
+      document.removeEventListener("mouseup", onMouseUp);
+    };
+    document.addEventListener("mousemove", onMouseMove);
+    document.addEventListener("mouseup", onMouseUp);
+  };
+
+  const startTranscriptResize = (e: React.MouseEvent) => {
+    e.preventDefault();
+    const startY = e.clientY;
+    const startHeight = transcriptHeight;
+
+    const onMouseMove = (ev: MouseEvent) => {
+      const next = Math.min(TRANSCRIPT_MAX, Math.max(TRANSCRIPT_MIN, startHeight - (ev.clientY - startY)));
+      setTranscriptHeight(next);
+    };
+    const onMouseUp = () => {
+      document.removeEventListener("mousemove", onMouseMove);
+      document.removeEventListener("mouseup", onMouseUp);
+    };
+    document.addEventListener("mousemove", onMouseMove);
+    document.addEventListener("mouseup", onMouseUp);
+  };
+
+  return (
+    <div className="flex h-[calc(100vh-64px)] overflow-hidden">
+      {/* LEFT PANEL */}
+      <div
+        className="flex flex-col bg-surface-card shrink-0"
+        style={{ width: sidebarWidth }}
+      >
+        {/* Panel header */}
+        <div className="px-4 py-4 border-b border-gray-800 flex items-center justify-between shrink-0">
+          <span className="text-xs font-semibold tracking-widest uppercase text-gray-400">
+            Test Plan Scenario
+          </span>
+          <span className="text-xs bg-gray-800 text-gray-400 px-2 py-0.5 rounded-full">
+            {testPlan.steps.length} steps
+          </span>
+        </div>
+
+        {/* Steps list */}
+        <div className="flex-1 overflow-y-auto">
+          {testPlan.steps.map((step) => {
+            const isActive = step.id === activeStepId;
+            return (
+              <div
+                key={step.id}
+                className={cn(
+                  "flex items-start gap-3 px-4 py-3 border-l-2 border-transparent transition-colors",
+                  isActive && "bg-indigo-500/10 border-indigo-500"
+                )}
+              >
+                <StatusIcon status={step.status} />
+                <div className="flex-1 min-w-0">
+                  {isEditable ? (
+                    <input
+                      value={stepTexts[step.id] ?? step.text}
+                      onChange={(e) =>
+                        setStepTexts((prev) => ({ ...prev, [step.id]: e.target.value }))
+                      }
+                      className="w-full bg-transparent text-sm text-gray-300 focus:outline-none focus:text-white leading-relaxed"
+                    />
+                  ) : (
+                    <span
+                      className={cn(
+                        "text-sm text-gray-300 leading-relaxed",
+                        (step.status === "pass" || step.status === "fail") &&
+                          "line-through text-gray-500"
+                      )}
+                    >
+                      {step.text}
+                    </span>
+                  )}
+                  {step.status === "healed" && (
+                    <span className="mt-1 inline-block text-xs bg-amber-500/20 text-amber-400 border border-amber-500/30 px-1.5 py-0.5 rounded">
+                      self-healed
+                    </span>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Footer */}
+        <div className="p-4 border-t border-gray-800 shrink-0">
+          {isComplete ? (
+            <button
+              onClick={onViewReport}
+              className="w-full flex items-center justify-center gap-2 py-2.5 rounded-lg bg-white text-gray-900 text-sm font-medium hover:bg-gray-100 transition-colors"
+            >
+              View Detailed Report →
+            </button>
+          ) : (
+            <button
+              onClick={onRunSession}
+              disabled={isRunning}
+              className={cn(
+                "w-full flex items-center justify-center gap-2 py-2.5 rounded-lg",
+                "bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium transition-colors",
+                "disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-indigo-600"
+              )}
+            >
+              <Play className="w-4 h-4" />
+              {isRunning ? "Running..." : "Run Autonomous Session"}
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* SIDEBAR RESIZE HANDLE */}
+      <div
+        onMouseDown={startSidebarResize}
+        className="w-1 shrink-0 bg-gray-800 hover:bg-indigo-500/50 cursor-col-resize transition-colors group relative"
+        title="Drag to resize"
+      >
+        {/* Grip dots */}
+        <div className="absolute inset-y-0 left-1/2 -translate-x-1/2 flex flex-col items-center justify-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+          {[0, 1, 2].map((i) => (
+            <div key={i} className="w-0.5 h-0.5 rounded-full bg-indigo-400" />
+          ))}
+        </div>
+      </div>
+
+      {/* RIGHT PANEL */}
+      <div className="flex-1 flex flex-col overflow-hidden min-w-0">
+        {/* Browser Viewport (flex-1) */}
+        <div className="flex-1 flex flex-col min-h-0">
+          {/* Browser chrome */}
+          <div className="h-10 bg-[#1A1C20] border-b border-gray-800 flex items-center gap-3 px-4 shrink-0">
+            {/* Traffic lights */}
+            <div className="flex items-center gap-1.5">
+              <div className="w-2.5 h-2.5 rounded-full bg-rose-500/70" />
+              <div className="w-2.5 h-2.5 rounded-full bg-amber-500/70" />
+              <div className="w-2.5 h-2.5 rounded-full bg-emerald-500/70" />
+            </div>
+            {/* URL bar */}
+            <div className="flex-1 bg-[#0A0A0B] rounded-md px-3 py-1 text-xs text-gray-400 truncate">
+              {currentUrl || "about:blank"}
+            </div>
+          </div>
+
+          {/* Content area */}
+          <div className="flex-1 bg-[#0A0A0B] relative overflow-hidden">
+            {currentScreenshot ? (
+              <img
+                src={`data:image/png;base64,${currentScreenshot}`}
+                alt="Browser screenshot"
+                className="w-full h-full object-contain"
+              />
+            ) : (
+              <div className="absolute inset-0 flex flex-col items-center justify-center gap-3">
+                <Monitor className="w-12 h-12 text-gray-700" />
+                <span className="text-sm text-gray-500">Ready to start autonomous session</span>
+              </div>
+            )}
+
+            {/* Crosshair overlay during run */}
+            {isRunning && (
+              <div className="absolute inset-0 pointer-events-none">
+                <div className="absolute top-1/2 left-0 right-0 h-px bg-indigo-500/30" />
+                <div className="absolute left-1/2 top-0 bottom-0 w-px bg-indigo-500/30" />
+              </div>
+            )}
+
+            {/* Mic button */}
+            <button
+              className={cn(
+                "absolute bottom-4 right-4 w-10 h-10 rounded-full flex items-center justify-center transition-all",
+                isRunning ? "bg-indigo-500 animate-pulse" : "bg-[#1A1C20]"
+              )}
+            >
+              <Mic className="w-4 h-4 text-white" />
+            </button>
+          </div>
+        </div>
+
+        {/* TRANSCRIPT RESIZE HANDLE */}
+        <div
+          onMouseDown={startTranscriptResize}
+          className="h-1 shrink-0 bg-gray-800 hover:bg-indigo-500/50 cursor-row-resize transition-colors group relative"
+          title="Drag to resize"
+        >
+          {/* Grip dots */}
+          <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 flex items-center justify-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+            {[0, 1, 2].map((i) => (
+              <div key={i} className="w-0.5 h-0.5 rounded-full bg-indigo-400" />
+            ))}
+          </div>
+        </div>
+
+        {/* Agent Transcript */}
+        <div
+          className="flex flex-col border-gray-800 shrink-0"
+          style={{ height: transcriptHeight }}
+        >
+          {/* Header */}
+          <div className="flex items-center gap-2 px-4 py-2 bg-[#1A1C20] border-b border-gray-800 shrink-0">
+            <Terminal className="w-3.5 h-3.5 text-gray-400" />
+            <span className="text-xs font-semibold tracking-widest uppercase text-gray-400">
+              Agent Transcript
+            </span>
+          </div>
+
+          {/* Content */}
+          <div className="flex-1 overflow-y-auto bg-[#0A0A0B] p-3 font-mono text-xs">
+            {transcriptLines.length === 0 ? (
+              <span className="text-gray-600">Waiting for session to start...</span>
+            ) : (
+              transcriptLines.map((line, i) => (
+                <div key={i} className={cn("mb-0.5 leading-relaxed", TRANSCRIPT_COLOR[line.type])}>
+                  <span className="text-gray-600 mr-2">[{line.timestamp}]</span>
+                  {TRANSCRIPT_PREFIX[line.type]}
+                  {line.text}
+                </div>
+              ))
+            )}
+            <div ref={transcriptEndRef} />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

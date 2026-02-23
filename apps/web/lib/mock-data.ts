@@ -1,0 +1,66 @@
+import type { TestPlan, BugReport } from "@verifai/types";
+
+export const mockTestPlan: TestPlan = {
+  id: "tp-001",
+  sourceTicket: "ACM-8892",
+  targetUrl: "https://www.saucedemo.com",
+  createdAt: new Date().toISOString(),
+  steps: [
+    { id: "s1", text: "Navigate to the login page", expectedBehavior: "Login form is visible with username and password fields", status: "pending" },
+    { id: "s2", text: "Enter valid username 'standard_user'", expectedBehavior: "Username field populated with 'standard_user'", targetElement: "#user-name", status: "pending" },
+    { id: "s3", text: "Enter valid password 'secret_sauce'", expectedBehavior: "Password field populated (masked)", targetElement: "#password", status: "pending" },
+    { id: "s4", text: "Click the Login button", expectedBehavior: "User is redirected to inventory page showing product list", targetElement: "#login-button", status: "pending" },
+    { id: "s5", text: "Add 'Sauce Labs Backpack' to cart", expectedBehavior: "Cart badge shows '1' and button changes to 'Remove'", targetElement: "[data-test='add-to-cart-sauce-labs-backpack']", status: "pending" },
+    { id: "s6", text: "Navigate to the shopping cart", expectedBehavior: "Cart page shows the Backpack item with correct price", targetElement: ".shopping_cart_link", status: "pending" },
+    { id: "s7", text: "Proceed to checkout and verify total", expectedBehavior: "Checkout page displays correct item total of $29.99", targetElement: "[data-test='checkout']", status: "pending" },
+  ],
+};
+
+export const mockBugReport: BugReport = {
+  id: "rpt-001",
+  testPlanId: "tp-001",
+  sourceTicket: "ACM-8892",
+  targetUrl: "https://www.saucedemo.com",
+  totalSteps: 7,
+  passedSteps: 5,
+  failedSteps: 2,
+  healedSteps: 1,
+  passRate: 71.4,
+  createdAt: new Date().toISOString(),
+  completedAt: new Date().toISOString(),
+  steps: [
+    { id: "s1", text: "Navigate to the login page", expectedBehavior: "Login form is visible", status: "pass" },
+    { id: "s2", text: "Enter valid username 'standard_user'", expectedBehavior: "Username field populated", status: "pass", targetElement: "#user-name" },
+    { id: "s3", text: "Enter valid password 'secret_sauce'", expectedBehavior: "Password field populated", status: "healed", targetElement: "#password" },
+    { id: "s4", text: "Click the Login button", expectedBehavior: "Redirected to inventory", status: "pass", targetElement: "#login-button" },
+    { id: "s5", text: "Add 'Sauce Labs Backpack' to cart", expectedBehavior: "Cart badge shows '1'", status: "fail", targetElement: "[data-test='add-to-cart']" },
+    { id: "s6", text: "Navigate to the shopping cart", expectedBehavior: "Cart shows Backpack", status: "pass", targetElement: ".shopping_cart_link" },
+    { id: "s7", text: "Verify checkout total", expectedBehavior: "Total is $29.99", status: "fail", targetElement: "[data-test='checkout']" },
+  ],
+  bugs: [
+    {
+      id: "bug-001",
+      stepId: "s5",
+      title: "Add to Cart button unresponsive for 'Sauce Labs Backpack'",
+      description: "Clicking the 'Add to cart' button for Sauce Labs Backpack does not update the cart badge counter. The button remains in its default state instead of changing to 'Remove'.",
+      severity: "high",
+      screenshotUrl: "",
+      expectedBehavior: "Cart badge should show '1' and button text should change to 'Remove'",
+      actualBehavior: "Cart badge remains empty, button stays as 'Add to cart'",
+      jiraTicketUrl: "https://your-domain.atlassian.net/browse/ACM-9001",
+      jiraTicketKey: "ACM-9001",
+    },
+    {
+      id: "bug-002",
+      stepId: "s7",
+      title: "Checkout total displays $0.00 instead of $29.99",
+      description: "After adding Sauce Labs Backpack ($29.99) to cart and proceeding to checkout, the item total displays as $0.00 instead of the expected $29.99.",
+      severity: "high",
+      screenshotUrl: "",
+      expectedBehavior: "Checkout page should display item total of $29.99",
+      actualBehavior: "Checkout page shows $0.00 as item total",
+      jiraTicketUrl: "https://your-domain.atlassian.net/browse/ACM-9002",
+      jiraTicketKey: "ACM-9002",
+    },
+  ],
+};
