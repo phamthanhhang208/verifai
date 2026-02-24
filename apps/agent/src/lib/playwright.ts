@@ -75,25 +75,72 @@ export async function takeScreenshot(): Promise<string> {
   // Send at full 1280×720 — do NOT resize. Gemini Computer Use returns coordinates
   // in the coordinate space of the image it receives. If we downscale to 1024px but
   // tell Gemini the viewport is 1280×720, clicks land ~25% off-target.
-  const buffer = await page.screenshot({ type: "jpeg", quality: 60 });
+  const buffer = await page.screenshot({ type: "jpeg", quality: 80 });
+  console.log(`[Screenshot] ${buffer.length} bytes (viewport 1280×720)`);
   return buffer.toString("base64");
 }
 
+const MAX_AOM_CHARS = 6000;
+
 export async function getAOMSnapshot(): Promise<string> {
   if (!page) throw new Error("Browser not launched");
+  let raw: string;
   try {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const snapshot = await (page as any).accessibility.snapshot();
-    return JSON.stringify(snapshot, null, 2);
+    if (snapshot) {
+      raw = JSON.stringify(snapshot, null, 2);
+    } else {
+      throw new Error("accessibility.snapshot() returned null");
+    }
   } catch {
-    // Fallback: return visible text content if accessibility API unavailable
-    const text = await page.evaluate(() =>
-      Array.from(document.querySelectorAll("button, a, input, select, [role]"))
-        .map((el) => `${el.tagName} [${el.getAttribute("id") || el.getAttribute("name") || ""}]: ${el.textContent?.trim().slice(0, 60)}`)
-        .join("\n")
-    );
-    return text;
+    // Fallback: enumerate visible interactive elements WITH bounding box coordinates
+    // so Gemini can map elements to pixel positions in the screenshot.
+    raw = await page.evaluate(() => {
+      const SELECTORS = "button, a, input, select, textarea, [role], label, img, h1, h2, h3, h4, h5, h6, [data-test], [id]";
+      const seen = new Set<Element>();
+      return Array.from(document.querySelectorAll(SELECTORS))
+        .filter((el) => {
+          if (seen.has(el)) return false;
+          seen.add(el);
+          const r = el.getBoundingClientRect();
+          // Only include visible elements within the viewport
+          return r.width > 0 && r.height > 0 && r.top < 720 && r.bottom > 0 && r.left < 1280 && r.right > 0;
+        })
+        .map((el) => {
+          const r = el.getBoundingClientRect();
+          const cx = Math.round(r.left + r.width / 2);
+          const cy = Math.round(r.top + r.height / 2);
+          const tag = el.tagName.toLowerCase();
+          const id = el.getAttribute("id") || "";
+          const name = (el as HTMLInputElement).name || "";
+          const type = (el as HTMLInputElement).type || "";
+          const placeholder = (el as HTMLInputElement).placeholder || "";
+          const text = el.textContent?.trim().slice(0, 60) || "";
+          const role = el.getAttribute("role") || "";
+          const dataTest = el.getAttribute("data-test") || "";
+
+          let desc = `<${tag}`;
+          if (id) desc += ` id="${id}"`;
+          if (name) desc += ` name="${name}"`;
+          if (type && tag === "input") desc += ` type="${type}"`;
+          if (role) desc += ` role="${role}"`;
+          if (dataTest) desc += ` data-test="${dataTest}"`;
+          if (placeholder) desc += ` placeholder="${placeholder}"`;
+          desc += `>`;
+          if (text && tag !== "input") desc += ` "${text}"`;
+          desc += ` @(${cx},${cy})`;
+          return desc;
+        })
+        .join("\n");
+    });
   }
+
+  if (raw.length > MAX_AOM_CHARS) {
+    raw = raw.slice(0, MAX_AOM_CHARS) + "\n... (truncated)";
+  }
+  console.log(`[AOM] snapshot length: ${raw.length} chars`);
+  return raw;
 }
 
 export async function injectHighlight(selector: string): Promise<void> {
@@ -198,18 +245,121 @@ export async function executeComputerAction(action: ComputerUseAction): Promise<
     case "click": {
       if (!action.coordinate) throw new Error("Click requires [x,y] coordinates");
       const [x, y] = action.coordinate;
+      console.log(`[Action] click at (${x}, ${y})`);
       await injectHighlightAtCoord(x, y);
       await page.mouse.click(x, y);
       break;
     }
     case "type": {
       if (!action.text) throw new Error("Type requires text");
+
+      // Input types that can actually receive keyboard text
+      const TYPEABLE_INPUT_TYPES = new Set([
+        "text", "password", "email", "number", "search",
+        "tel", "url", "date", "time", "datetime-local",
+        "month", "week", "color", "",
+      ]);
+
       if (action.coordinate) {
         const [x, y] = action.coordinate;
-        await injectHighlightAtCoord(x, y);
-        await page.mouse.click(x, y);
-        await new Promise((r) => setTimeout(r, 100));
+
+        // Check what element is actually at the target coordinate.
+        const atCoord = await page.evaluate(
+          ({ px, py, typeableTypes }: { px: number; py: number; typeableTypes: string[] }) => {
+            const typeableSet = new Set(typeableTypes);
+            const el = document.elementFromPoint(px, py);
+            if (!el) return null;
+            const tag = el.tagName.toLowerCase();
+            const inputType = (el as HTMLInputElement).type ?? "";
+            return {
+              tag,
+              inputType,
+              id: el.id,
+              name: (el as HTMLInputElement).name ?? "",
+              placeholder: (el as HTMLInputElement).placeholder ?? "",
+              isTypeable: tag === "textarea" || (tag === "input" && typeableSet.has(inputType)),
+            };
+          },
+          { px: x, py: y, typeableTypes: [...TYPEABLE_INPUT_TYPES] }
+        );
+
+        console.log(`[Action] type at (${x}, ${y}) — <${atCoord?.tag}> type="${atCoord?.inputType}" id="${atCoord?.id}" name="${atCoord?.name}" placeholder="${atCoord?.placeholder}" typeable=${atCoord?.isTypeable}`);
+
+        if (atCoord?.isTypeable) {
+          // Coordinates are correct — click the input and type
+          await injectHighlightAtCoord(x, y);
+          await page.mouse.click(x, y);
+          await new Promise((r) => setTimeout(r, 100));
+        } else {
+          // Coordinates are wrong (e.g. hit a submit button).
+          // Use the action's reasoning text to find the intended input semantically.
+          const reasoningWords = (action.reasoning ?? "")
+            .toLowerCase()
+            .split(/[\s_\-/.,"'()]+/)
+            .filter((w) => w.length >= 3);
+
+          const semantic = await page.evaluate(
+            ({ words, typeableTypes }: { words: string[]; typeableTypes: string[] }) => {
+              const typeableSet = new Set(typeableTypes);
+              const inputs = Array.from(
+                document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>("input, textarea")
+              ).filter((c) => {
+                const r = c.getBoundingClientRect();
+                if (r.width === 0 || r.height === 0) return false;
+                return c.tagName === "TEXTAREA" || typeableSet.has((c as HTMLInputElement).type ?? "");
+              });
+
+              // Score each visible input by how many reasoning words appear in its attributes/label
+              let bestScore = 0;
+              let bestEl: { x: number; y: number; id: string; name: string } | null = null;
+              for (const el of inputs) {
+                const attrs = [
+                  el.id,
+                  el.getAttribute("name") ?? "",
+                  el.getAttribute("placeholder") ?? "",
+                  el.getAttribute("aria-label") ?? "",
+                  document.querySelector(`label[for="${el.id}"]`)?.textContent ?? "",
+                ].map((a) => a.toLowerCase());
+
+                const score = words.filter((w) => attrs.some((a) => a.includes(w))).length;
+                if (score > bestScore) {
+                  bestScore = score;
+                  const r = el.getBoundingClientRect();
+                  bestEl = { x: r.left + r.width / 2, y: r.top + r.height / 2, id: el.id, name: el.getAttribute("name") ?? "" };
+                }
+              }
+              return bestScore > 0 ? bestEl : null;
+            },
+            { words: reasoningWords, typeableTypes: [...TYPEABLE_INPUT_TYPES] }
+          );
+
+          if (semantic) {
+            const sx = Math.round(semantic.x), sy = Math.round(semantic.y);
+            console.warn(`[Action] type coords hit <${atCoord?.tag}> — semantic match id="${semantic.id}" name="${semantic.name}" at (${sx}, ${sy})`);
+            await injectHighlightAtCoord(sx, sy);
+            await page.mouse.click(sx, sy);
+            await new Promise((r) => setTimeout(r, 100));
+          } else {
+            // No typeable target found — skip the keyboard input entirely.
+            // Typing into the currently focused field risks corrupting an already-filled input
+            // (e.g., overwriting the username field while trying to fill the password field).
+            console.warn(`[Action] type coords hit <${atCoord?.tag}> and no semantic match found — skipping to avoid corrupting filled fields`);
+            break; // exit switch without typing
+          }
+        }
       }
+
+      // Check if the focused input already contains the same value — skip re-typing
+      const existingValue = await page.evaluate(() => {
+        const el = document.activeElement as HTMLInputElement | null;
+        return el?.value ?? "";
+      });
+      if (existingValue === action.text) {
+        console.log(`[Action] type — field already contains "${action.text.slice(0, 40)}", skipping`);
+        break;
+      }
+      console.log(`[Action] type — current value: "${existingValue.slice(0, 40)}" → will type: "${action.text.slice(0, 40)}"`);
+
       await page.keyboard.press("Control+a");
       await page.keyboard.type(action.text, { delay: 30 });
       break;

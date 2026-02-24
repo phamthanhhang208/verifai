@@ -44,6 +44,8 @@ export default function Home() {
   const [collectedBugs, setCollectedBugs] = useState<Bug[]>([]);
   const [configureError, setConfigureError] = useState<string | null>(null);
   const [geminiApiKey, setGeminiApiKey] = useState("");
+  const [isPaused, setIsPaused] = useState(false);
+  const [isLoadingReport, setIsLoadingReport] = useState(false);
 
   // Hydrate Gemini key from localStorage after mount
   useEffect(() => {
@@ -80,11 +82,11 @@ export default function Home() {
               steps: prev.steps.map((s) =>
                 s.id === event.stepId
                   ? {
-                      ...s,
-                      status: event.status,
-                      incompleteReason: event.incompleteReason,
-                      failureType: event.failureType,
-                    }
+                    ...s,
+                    status: event.status,
+                    incompleteReason: event.incompleteReason,
+                    failureType: event.failureType,
+                  }
                   : s
               ),
             };
@@ -127,7 +129,29 @@ export default function Home() {
         case "session_complete":
           setIsRunning(false);
           setIsComplete(true);
+          setIsPaused(false);
           setReportId(event.reportId);
+          break;
+
+        case "session_aborted":
+          setIsRunning(false);
+          setIsComplete(false);
+          setIsPaused(false);
+          setCurrentScreenshot(null);
+          setIncompleteStepIds([]);
+          setCollectedBugs([]);
+          setTestPlan((prev) => {
+            if (!prev) return prev;
+            return {
+              ...prev,
+              steps: prev.steps.map((s) => ({
+                ...s,
+                status: "pending" as const,
+                incompleteReason: undefined,
+                failureType: undefined,
+              })),
+            };
+          });
           break;
 
         case "error":
@@ -258,68 +282,110 @@ export default function Home() {
     });
   };
 
-  const handleViewReport = async () => {
-    // Try fetching the real report from Firestore via API
-    if (reportId && !reportId.startsWith("rpt-")) {
-      try {
-        const res = await fetch(`/api/report/${reportId}`);
-        if (res.ok) {
-          const reportData: BugReport = await res.json();
-          setReport(reportData);
-          setCurrentScreen(3);
-          return;
-        }
-      } catch {
-        // Fall through to local construction
-      }
-    }
+  const handlePause = () => {
+    socket.emit("session:pause", {});
+    setIsPaused(true);
+  };
 
-    // Local fallback: construct report from current testPlan state
-    if (testPlan) {
-      const passedSteps = testPlan.steps.filter((s) => s.status === "passed").length;
-      const failedSteps = testPlan.steps.filter((s) => s.status === "failed").length;
-      const incompleteSteps = testPlan.steps.filter((s) => s.status === "incomplete").length;
-      const completedSteps = passedSteps + failedSteps;
-      const total = testPlan.steps.length;
+  const handleResume = () => {
+    socket.emit("session:resume", {});
+    setIsPaused(false);
+  };
 
-      const reportStatus =
-        failedSteps > 0 ? "failed"
-        : incompleteSteps > 0 ? "incomplete"
-        : "passed";
-
-      const passRate =
-        completedSteps > 0
-          ? Math.round((passedSteps / completedSteps) * 1000) / 10
-          : total === incompleteSteps ? 0 : 100;
-
-      let summary = "";
-      if (reportStatus === "failed") {
-        summary = `Found ${failedSteps} bug(s).${incompleteSteps > 0 ? ` ${incompleteSteps} step(s) could not complete.` : ""}`;
-      } else if (reportStatus === "incomplete") {
-        summary = `${incompleteSteps} step(s) could not complete. No bugs found in completed steps.`;
-      } else {
-        summary = `All ${total} steps passed. No bugs found.`;
-      }
-
-      setReport({
-        id: reportId || `local-${Date.now()}`,
-        testPlanId: testPlan.id,
-        sourceTicket: testPlan.sourceTicket,
-        targetUrl: testPlan.targetUrl,
-        steps: testPlan.steps,
-        bugs: collectedBugs,
-        totalSteps: total,
-        passedSteps,
-        failedSteps,
-        incompleteSteps,
-        completedSteps,
-        passRate,
-        reportStatus: reportStatus as BugReport["reportStatus"],
-        summary,
-        createdAt: testPlan.createdAt,
-        completedAt: new Date().toISOString(),
+  const handleReset = () => {
+    if (isRunning) {
+      socket.emit("session:abort", {});
+      // session_aborted event will reset state
+    } else {
+      // Not running — reset steps locally
+      setIsComplete(false);
+      setIsPaused(false);
+      setCurrentScreenshot(null);
+      setTranscriptLines([]);
+      setIncompleteStepIds([]);
+      setCollectedBugs([]);
+      setTestPlan((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          steps: prev.steps.map((s) => ({
+            ...s,
+            status: "pending" as const,
+            incompleteReason: undefined,
+            failureType: undefined,
+          })),
+        };
       });
-      setCurrentScreen(3);
+    }
+  };
+
+  const handleViewReport = async () => {
+    setIsLoadingReport(true);
+    try {
+      // Try fetching the real report from Firestore via API
+      if (reportId && !reportId.startsWith("rpt-")) {
+        try {
+          const res = await fetch(`/api/report/${reportId}`);
+          if (res.ok) {
+            const reportData: BugReport = await res.json();
+            setReport(reportData);
+            setCurrentScreen(3);
+            return;
+          }
+        } catch {
+          // Fall through to local construction
+        }
+      }
+
+      // Local fallback: construct report from current testPlan state
+      if (testPlan) {
+        const passedSteps = testPlan.steps.filter((s) => s.status === "passed").length;
+        const failedSteps = testPlan.steps.filter((s) => s.status === "failed").length;
+        const incompleteSteps = testPlan.steps.filter((s) => s.status === "incomplete").length;
+        const completedSteps = passedSteps + failedSteps;
+        const total = testPlan.steps.length;
+
+        const reportStatus =
+          failedSteps > 0 ? "failed"
+            : incompleteSteps > 0 ? "incomplete"
+              : "passed";
+
+        const passRate =
+          completedSteps > 0
+            ? Math.round((passedSteps / completedSteps) * 1000) / 10
+            : total === incompleteSteps ? 0 : 100;
+
+        let summary = "";
+        if (reportStatus === "failed") {
+          summary = `Found ${failedSteps} bug(s).${incompleteSteps > 0 ? ` ${incompleteSteps} step(s) could not complete.` : ""}`;
+        } else if (reportStatus === "incomplete") {
+          summary = `${incompleteSteps} step(s) could not complete. No bugs found in completed steps.`;
+        } else {
+          summary = `All ${total} steps passed. No bugs found.`;
+        }
+
+        setReport({
+          id: reportId || `local-${Date.now()}`,
+          testPlanId: testPlan.id,
+          sourceTicket: testPlan.sourceTicket,
+          targetUrl: testPlan.targetUrl,
+          steps: testPlan.steps,
+          bugs: collectedBugs,
+          totalSteps: total,
+          passedSteps,
+          failedSteps,
+          incompleteSteps,
+          completedSteps,
+          passRate,
+          reportStatus: reportStatus as BugReport["reportStatus"],
+          summary,
+          createdAt: testPlan.createdAt,
+          completedAt: new Date().toISOString(),
+        });
+        setCurrentScreen(3);
+      }
+    } finally {
+      setIsLoadingReport(false);
     }
   };
 
@@ -363,13 +429,18 @@ export default function Home() {
           onRetryIncomplete={handleRetryIncomplete}
           onSkipStep={handleSkipStep}
           onRetryStep={handleRetryStep}
+          onPause={handlePause}
+          onResume={handleResume}
+          onReset={handleReset}
           userIncompleteStepIds={userIncompleteStepIds}
           isRunning={isRunning}
+          isPaused={isPaused}
           isComplete={isComplete}
           currentScreenshot={currentScreenshot}
           currentUrl={currentUrl}
           transcriptLines={transcriptLines}
           incompleteStepIds={incompleteStepIds}
+          isLoadingReport={isLoadingReport}
         />
       )}
 

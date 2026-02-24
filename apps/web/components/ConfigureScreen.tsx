@@ -40,6 +40,15 @@ export default function ConfigureScreen({
           <p className="mt-1 text-sm text-gray-400">Configure your AI-powered test session</p>
         </div>
 
+        {/* Demo disclaimer */}
+        <div className="mb-6 rounded-lg border border-indigo-500/20 bg-indigo-500/5 px-4 py-3">
+          <p className="text-xs font-semibold text-indigo-300 mb-1">Demo Tickets</p>
+          <ul className="text-xs text-gray-400 space-y-0.5">
+            <li><span className="text-indigo-400 font-mono">KAN-5</span> — Happy path (login → add to cart → checkout)</li>
+            <li><span className="text-indigo-400 font-mono">KAN-28</span> — Error flow (validates broken UI states)</li>
+          </ul>
+        </div>
+
         {/* Inputs */}
         <div className="space-y-5">
           {/* Source Specification */}

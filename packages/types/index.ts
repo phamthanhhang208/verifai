@@ -123,6 +123,10 @@ export interface SessionCompleteEvent {
   reportId: string;
 }
 
+export interface SessionAbortedEvent {
+  type: "session_aborted";
+}
+
 export interface ErrorEvent {
   type: "error";
   message: string;
@@ -135,6 +139,7 @@ export type SocketEvent =
   | ScreenshotEvent
   | NarrationEvent
   | SessionCompleteEvent
+  | SessionAbortedEvent
   | ErrorEvent;
 
 // ─── Jira ──────────────────────────────────────────────

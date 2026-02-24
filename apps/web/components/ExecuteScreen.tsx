@@ -7,6 +7,8 @@ import {
   XCircle,
   Loader2,
   Play,
+  Pause,
+  RotateCcw,
   Terminal,
   Monitor,
   Mic,
@@ -30,13 +32,18 @@ interface ExecuteScreenProps {
   onRetryIncomplete: () => void;
   onSkipStep: (stepId: string) => void;
   onRetryStep: (stepId: string) => void;
+  onPause: () => void;
+  onResume: () => void;
+  onReset: () => void;
   userIncompleteStepIds: string[];
   isRunning: boolean;
+  isPaused: boolean;
   isComplete: boolean;
   currentScreenshot: string | null;
   currentUrl: string;
   transcriptLines: TranscriptLine[];
   incompleteStepIds: string[];
+  isLoadingReport: boolean;
 }
 
 function StatusIcon({ status }: { status: StepStatus }) {
@@ -80,13 +87,18 @@ export default function ExecuteScreen({
   onRetryIncomplete,
   onSkipStep,
   onRetryStep,
+  onPause,
+  onResume,
+  onReset,
   userIncompleteStepIds,
   isRunning,
+  isPaused,
   isComplete,
   currentScreenshot,
   currentUrl,
   transcriptLines,
   incompleteStepIds,
+  isLoadingReport,
 }: ExecuteScreenProps) {
   const transcriptEndRef = useRef<HTMLDivElement>(null);
   const [stepTexts, setStepTexts] = useState<Record<string, string>>(
@@ -188,7 +200,7 @@ export default function ExecuteScreen({
                           "text-sm leading-relaxed flex-1",
                           isIncomplete ? "text-amber-500/70" : "text-gray-300",
                           (step.status === "passed" || step.status === "failed") &&
-                            "line-through text-gray-500"
+                          "line-through text-gray-500"
                         )}
                       >
                         {step.text}
@@ -220,12 +232,12 @@ export default function ExecuteScreen({
                       {step.incompleteReason === "rate_limit"
                         ? "⏭ Rate Limited"
                         : step.incompleteReason === "timeout"
-                        ? "⏭ Timeout"
-                        : step.incompleteReason === "crash"
-                        ? "⏭ Step Error"
-                        : userIncompleteStepIds.includes(step.id)
-                        ? "⏭ Skipped by User"
-                        : "⏭ Step Error"}
+                          ? "⏭ Timeout"
+                          : step.incompleteReason === "crash"
+                            ? "⏭ Step Error"
+                            : userIncompleteStepIds.includes(step.id)
+                              ? "⏭ Skipped by User"
+                              : "⏭ Step Error"}
                     </span>
                   )}
                 </div>
@@ -240,9 +252,22 @@ export default function ExecuteScreen({
             <>
               <button
                 onClick={onViewReport}
-                className="w-full flex items-center justify-center gap-2 py-2.5 rounded-lg bg-white text-gray-900 text-sm font-medium hover:bg-gray-100 transition-colors"
+                disabled={isLoadingReport}
+                className={cn(
+                  "w-full flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-medium transition-colors",
+                  isLoadingReport
+                    ? "bg-gray-200 text-gray-500 cursor-wait"
+                    : "bg-white text-gray-900 hover:bg-gray-100"
+                )}
               >
-                View Detailed Report →
+                {isLoadingReport ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Loading Report...
+                  </>
+                ) : (
+                  "View Detailed Report →"
+                )}
               </button>
               {hasIncomplete && (
                 <button
@@ -253,19 +278,58 @@ export default function ExecuteScreen({
                   Retry {incompleteStepIds.length} Incomplete Step{incompleteStepIds.length > 1 ? "s" : ""}
                 </button>
               )}
+              <button
+                onClick={onReset}
+                className="w-full flex items-center justify-center gap-2 py-2.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm font-medium transition-colors"
+              >
+                <RotateCcw className="w-4 h-4" />
+                Reset All Steps
+              </button>
+            </>
+          ) : isRunning ? (
+            <>
+              <div className="flex gap-2">
+                {/* Pause / Resume toggle */}
+                <button
+                  onClick={isPaused ? onResume : onPause}
+                  className={cn(
+                    "flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-medium transition-colors",
+                    isPaused
+                      ? "bg-emerald-600 hover:bg-emerald-500 text-white"
+                      : "bg-amber-500/15 hover:bg-amber-500/25 text-amber-400 border border-amber-500/30"
+                  )}
+                >
+                  {isPaused ? <Play className="w-4 h-4" /> : <Pause className="w-4 h-4" />}
+                  {isPaused ? "Resume" : "Pause"}
+                </button>
+
+                {/* Reset / Abort */}
+                <button
+                  onClick={onReset}
+                  className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20 text-sm font-medium transition-colors"
+                >
+                  <RotateCcw className="w-4 h-4" />
+                  Reset
+                </button>
+              </div>
+
+              {/* Paused indicator */}
+              {isPaused && (
+                <div className="text-center text-xs text-amber-400/70 py-1">
+                  Session paused — will resume after current step
+                </div>
+              )}
             </>
           ) : (
             <button
               onClick={onRunSession}
-              disabled={isRunning}
               className={cn(
                 "w-full flex items-center justify-center gap-2 py-2.5 rounded-lg",
-                "bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium transition-colors",
-                "disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-indigo-600"
+                "bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium transition-colors"
               )}
             >
               <Play className="w-4 h-4" />
-              {isRunning ? "Running..." : "Run Autonomous Session"}
+              Run Autonomous Session
             </button>
           )}
         </div>
