@@ -1,7 +1,6 @@
 /// <reference lib="dom" />
 import { chromium } from "playwright";
 import type { Browser, Page } from "playwright";
-import sharp from "sharp";
 import type { GeminiAction, ComputerUseAction } from "@verifai/types";
 
 // ─── Timeouts (configurable via env) ────────────────────
@@ -73,15 +72,11 @@ export async function navigateTo(url: string): Promise<void> {
 
 export async function takeScreenshot(): Promise<string> {
   if (!page) throw new Error("Browser not launched");
-  const buffer = await page.screenshot({ type: "jpeg", quality: 80 });
-
-  // Compress to max 1024px width, JPEG 60%
-  const compressed = await sharp(buffer)
-    .resize({ width: 1024, withoutEnlargement: true })
-    .jpeg({ quality: 60 })
-    .toBuffer();
-
-  return compressed.toString("base64");
+  // Send at full 1280×720 — do NOT resize. Gemini Computer Use returns coordinates
+  // in the coordinate space of the image it receives. If we downscale to 1024px but
+  // tell Gemini the viewport is 1280×720, clicks land ~25% off-target.
+  const buffer = await page.screenshot({ type: "jpeg", quality: 60 });
+  return buffer.toString("base64");
 }
 
 export async function getAOMSnapshot(): Promise<string> {

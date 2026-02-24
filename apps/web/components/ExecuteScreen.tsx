@@ -167,15 +167,22 @@ export default function ExecuteScreen({
                 <StatusIcon status={step.status} />
                 <div className="flex-1 min-w-0">
                   {isEditable ? (
-                    <input
+                    <textarea
                       value={stepTexts[step.id] ?? step.text}
-                      onChange={(e) =>
-                        setStepTexts((prev) => ({ ...prev, [step.id]: e.target.value }))
-                      }
-                      className="w-full bg-transparent text-sm text-gray-300 focus:outline-none focus:text-white leading-relaxed"
+                      onChange={(e) => {
+                        setStepTexts((prev) => ({ ...prev, [step.id]: e.target.value }));
+                        e.target.style.height = "auto";
+                        e.target.style.height = e.target.scrollHeight + "px";
+                      }}
+                      rows={1}
+                      className="w-full bg-transparent text-sm text-gray-300 focus:outline-none focus:text-white leading-relaxed resize-none overflow-hidden"
+                      style={{ height: "auto" }}
+                      ref={(el) => {
+                        if (el) { el.style.height = "auto"; el.style.height = el.scrollHeight + "px"; }
+                      }}
                     />
                   ) : (
-                    <div className="flex items-start justify-between gap-2">
+                    <div className="flex items-start justify-between gap-2 min-w-0">
                       <span
                         className={cn(
                           "text-sm leading-relaxed flex-1",

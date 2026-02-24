@@ -1,19 +1,35 @@
 "use client";
 
 import { useState } from "react";
-import { Link2, Monitor, Loader2, ArrowRight } from "lucide-react";
+import { Link2, Monitor, Loader2, ArrowRight, Key } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 interface ConfigureScreenProps {
-  onSubmit: (source: string, targetUrl: string) => void;
+  onSubmit: (source: string, targetUrl: string, geminiApiKey: string) => void;
   isLoading: boolean;
+  error?: string | null;
+  geminiApiKey: string;
+  onGeminiKeyChange: (key: string) => void;
 }
 
-export default function ConfigureScreen({ onSubmit, isLoading }: ConfigureScreenProps) {
-  const [source, setSource] = useState("");
-  const [targetUrl, setTargetUrl] = useState("");
+export default function ConfigureScreen({
+  onSubmit,
+  isLoading,
+  error,
+  geminiApiKey,
+  onGeminiKeyChange,
+}: ConfigureScreenProps) {
+  const [source, setSource] = useState("KAN-5");
+  const [targetUrl, setTargetUrl] = useState("https://www.saucedemo.com/");
 
   const isDisabled = !source.trim() || !targetUrl.trim() || isLoading;
+
+  const inputClass = cn(
+    "w-full bg-[#1A1C20] border border-gray-800 rounded-xl pl-10 pr-4 py-3",
+    "text-sm text-white placeholder:text-gray-600",
+    "focus:outline-none focus:border-indigo-500 transition-colors",
+    "disabled:opacity-50 disabled:cursor-not-allowed"
+  );
 
   return (
     <main className="min-h-[calc(100vh-64px)] flex items-center justify-center px-4">
@@ -35,14 +51,9 @@ export default function ConfigureScreen({ onSubmit, isLoading }: ConfigureScreen
                 type="text"
                 value={source}
                 onChange={(e) => setSource(e.target.value)}
-                placeholder="Jira Ticket ID (e.g. ACM-8892)"
+                placeholder="Jira Ticket ID (e.g. KAN-5) or paste spec text"
                 disabled={isLoading}
-                className={cn(
-                  "w-full bg-[#1A1C20] border border-gray-800 rounded-xl pl-10 pr-4 py-3",
-                  "text-sm text-white placeholder:text-gray-600",
-                  "focus:outline-none focus:border-indigo-500 transition-colors",
-                  "disabled:opacity-50 disabled:cursor-not-allowed"
-                )}
+                className={inputClass}
               />
             </div>
           </div>
@@ -58,21 +69,42 @@ export default function ConfigureScreen({ onSubmit, isLoading }: ConfigureScreen
                 onChange={(e) => setTargetUrl(e.target.value)}
                 placeholder="https://staging.acme.com"
                 disabled={isLoading}
-                className={cn(
-                  "w-full bg-[#1A1C20] border border-gray-800 rounded-xl pl-10 pr-4 py-3",
-                  "text-sm text-white placeholder:text-gray-600",
-                  "focus:outline-none focus:border-indigo-500 transition-colors",
-                  "disabled:opacity-50 disabled:cursor-not-allowed"
-                )}
+                className={inputClass}
+              />
+            </div>
+          </div>
+
+          {/* Gemini API Key */}
+          <div className="space-y-2">
+            <label className="block text-sm text-gray-400">
+              Gemini API Key
+              <span className="ml-2 text-xs text-gray-600">(optional — falls back to server key)</span>
+            </label>
+            <div className="relative">
+              <Key className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
+              <input
+                type="password"
+                value={geminiApiKey}
+                onChange={(e) => onGeminiKeyChange(e.target.value)}
+                placeholder="AIza..."
+                disabled={isLoading}
+                className={inputClass}
               />
             </div>
           </div>
         </div>
 
+        {/* Error */}
+        {error && (
+          <p className="mt-6 text-sm text-red-400 bg-red-950/40 border border-red-800/50 rounded-lg px-4 py-3">
+            {error}
+          </p>
+        )}
+
         {/* Footer */}
-        <div className="flex justify-end mt-8">
+        <div className="flex justify-end mt-4">
           <button
-            onClick={() => !isDisabled && onSubmit(source.trim(), targetUrl.trim())}
+            onClick={() => !isDisabled && onSubmit(source.trim(), targetUrl.trim(), geminiApiKey.trim())}
             disabled={isDisabled}
             className={cn(
               "flex items-center gap-2 px-6 py-2.5 rounded-lg",

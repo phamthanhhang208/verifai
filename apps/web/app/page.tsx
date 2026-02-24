@@ -1,8 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import type { TestPlan, BugReport, Bug } from "@verifai/types";
-import { mockTestPlan } from "@/lib/mock-data";
 import { socket } from "@/lib/socket";
 import Header from "@/components/Header";
 import ConfigureScreen from "@/components/ConfigureScreen";
@@ -43,6 +42,19 @@ export default function Home() {
   const [incompleteStepIds, setIncompleteStepIds] = useState<string[]>([]);
   const [userIncompleteStepIds, setUserIncompleteStepIds] = useState<string[]>([]);
   const [collectedBugs, setCollectedBugs] = useState<Bug[]>([]);
+  const [configureError, setConfigureError] = useState<string | null>(null);
+  const [geminiApiKey, setGeminiApiKey] = useState("");
+
+  // Hydrate Gemini key from localStorage after mount
+  useEffect(() => {
+    const stored = localStorage.getItem("verifai_gemini_key") ?? "";
+    setGeminiApiKey(stored);
+  }, []);
+
+  const handleGeminiKeyChange = (key: string) => {
+    setGeminiApiKey(key);
+    localStorage.setItem("verifai_gemini_key", key);
+  };
 
   // Shared socket event handler — used by both initial run and retry
   const attachSocketHandler = () => {
@@ -138,14 +150,29 @@ export default function Home() {
     });
   };
 
-  const handleConfigure = async (source: string, targetUrl: string) => {
+  const handleConfigure = async (source: string, targetUrl: string, geminiKey: string) => {
     setIsLoading(true);
-    // Phase 3 TODO: call real Jira/spec parsing API here
-    await new Promise((resolve) => setTimeout(resolve, 2000));
-    setTestPlan({ ...mockTestPlan, sourceTicket: source, targetUrl });
-    setCurrentUrl(targetUrl);
-    setIsLoading(false);
-    setCurrentScreen(2);
+    setConfigureError(null);
+    try {
+      const agentUrl = process.env.NEXT_PUBLIC_AGENT_URL || "http://localhost:3001";
+      const res = await fetch(`${agentUrl}/api/plan`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source, targetUrl, geminiApiKey: geminiKey || undefined }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: `Agent error: ${res.status}` }));
+        throw new Error(err.error || `Agent error: ${res.status}`);
+      }
+      const plan: TestPlan = await res.json();
+      setTestPlan(plan);
+      setCurrentUrl(targetUrl);
+      setCurrentScreen(2);
+    } catch (err: any) {
+      setConfigureError(err.message || "Failed to generate test plan");
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const handleRunSession = () => {
@@ -160,7 +187,7 @@ export default function Home() {
     const agentUrl = process.env.NEXT_PUBLIC_AGENT_URL || "http://localhost:3001";
     socket.connect(agentUrl);
     attachSocketHandler();
-    socket.emit("session:start", { testPlan, targetUrl: testPlan.targetUrl });
+    socket.emit("session:start", { testPlan, targetUrl: testPlan.targetUrl, geminiApiKey: geminiApiKey.trim() || undefined });
   };
 
   const handleSkipStep = (stepId: string) => {
@@ -195,6 +222,7 @@ export default function Home() {
       testPlan,
       targetUrl: testPlan.targetUrl,
       skippedStepIds: [stepId],
+      geminiApiKey: geminiApiKey.trim() || undefined,
     });
   };
 
@@ -226,6 +254,7 @@ export default function Home() {
       testPlan,
       targetUrl: testPlan.targetUrl,
       skippedStepIds: incompleteStepIds,
+      geminiApiKey: geminiApiKey.trim() || undefined,
     });
   };
 
@@ -309,6 +338,7 @@ export default function Home() {
     setIncompleteStepIds([]);
     setUserIncompleteStepIds([]);
     setCollectedBugs([]);
+    setConfigureError(null);
   };
 
   return (
@@ -316,7 +346,13 @@ export default function Home() {
       <Header currentScreen={currentScreen} />
 
       {currentScreen === 1 && (
-        <ConfigureScreen onSubmit={handleConfigure} isLoading={isLoading} />
+        <ConfigureScreen
+          onSubmit={handleConfigure}
+          isLoading={isLoading}
+          error={configureError}
+          geminiApiKey={geminiApiKey}
+          onGeminiKeyChange={handleGeminiKeyChange}
+        />
       )}
 
       {currentScreen === 2 && testPlan && (

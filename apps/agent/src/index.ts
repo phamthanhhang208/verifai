@@ -5,6 +5,7 @@ import { Server as SocketIOServer } from "socket.io";
 import cors from "cors";
 import type { TestPlan } from "@verifai/types";
 import { runSession } from "./routes/session.js";
+import { handleGeneratePlan } from "./routes/plan.js";
 
 const app = express();
 const server = createServer(app);
@@ -26,6 +27,9 @@ app.get("/health", (_req, res) => {
   res.json({ status: "ok", service: "verifai-agent" });
 });
 
+// Test plan generation — POST /api/plan
+app.post("/api/plan", handleGeneratePlan);
+
 // In-memory session store — TODO: Replace with Redis in production
 const sessions = new Map<string, { status: string; startedAt: string }>();
 
@@ -43,17 +47,20 @@ io.on("connection", (socket) => {
   // ── Full session start ──────────────────────────────
   socket.on(
     "session:start",
-    async (data: { testPlan: TestPlan; targetUrl: string }) => {
+    async (data: { testPlan: TestPlan; targetUrl: string; geminiApiKey?: string }) => {
       const sessionId = `session-${Date.now()}`;
       sessions.set(sessionId, {
         status: "running",
         startedAt: new Date().toISOString(),
       });
 
-      console.log(`[Session] Starting ${sessionId} for ${data.targetUrl}`);
+      const keyInfo = data.geminiApiKey
+        ? `user key (${data.geminiApiKey.slice(0, 4)}...${data.geminiApiKey.slice(-4)})`
+        : "server env key";
+      console.log(`[Session] Starting ${sessionId} for ${data.targetUrl} — API key: ${keyInfo}`);
 
       try {
-        await runSession(socket, sessionId, data.testPlan, data.targetUrl, skipSignal);
+        await runSession(socket, sessionId, data.testPlan, data.targetUrl, skipSignal, data.geminiApiKey);
         sessions.set(sessionId, {
           status: "complete",
           startedAt: sessions.get(sessionId)!.startedAt,
@@ -76,7 +83,7 @@ io.on("connection", (socket) => {
   // ── Retry only the skipped steps ────────────────────
   socket.on(
     "session:retry_skipped",
-    async (data: { testPlan: TestPlan; targetUrl: string; skippedStepIds: string[] }) => {
+    async (data: { testPlan: TestPlan; targetUrl: string; skippedStepIds: string[]; geminiApiKey?: string }) => {
       const sessionId = `retry-${Date.now()}`;
       sessions.set(sessionId, {
         status: "running",
@@ -93,7 +100,7 @@ io.on("connection", (socket) => {
             .filter((s) => data.skippedStepIds.includes(s.id))
             .map((s) => ({ ...s, status: "pending" as const })),
         };
-        await runSession(socket, sessionId, retryPlan, data.targetUrl, skipSignal);
+        await runSession(socket, sessionId, retryPlan, data.targetUrl, skipSignal, data.geminiApiKey);
         sessions.set(sessionId, {
           status: "complete",
           startedAt: sessions.get(sessionId)!.startedAt,
@@ -118,6 +125,7 @@ io.on("connection", (socket) => {
 const PORT = parseInt(process.env.PORT || "3001");
 server.listen(PORT, () => {
   console.log(`[Verifai Agent] Running on port ${PORT}`);
-  console.log(`[Models] Vision:  gemini-3-flash-preview (Computer Use, 5 RPM)`);
+  console.log(`[Models] Vision:  gemini-3-flash (Computer Use, 5 RPM)`);
+  console.log(`[Models] Flash:   gemini-2.5-flash (fallback reasoning, 5 RPM)`);
   console.log(`[Models] Lite:    gemini-2.5-flash-lite (verify/narrate, 10 RPM)`);
 });

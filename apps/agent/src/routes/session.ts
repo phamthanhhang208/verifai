@@ -15,7 +15,7 @@ import {
   retryAction, fallbackDecideAction,
   type GeminiCallContext,
 } from "../lib/gemini.js";
-import { GeminiRateLimitError } from "../lib/models.js";
+import { GeminiRateLimitError, MODELS } from "../lib/models.js";
 import { compileAndSaveReport } from "../lib/report.js";
 
 // ─── Helpers ────────────────────────────────────────────
@@ -76,7 +76,8 @@ export async function runSession(
   _sessionId: string,
   testPlan: TestPlan,
   targetUrl: string,
-  skipSignal?: Set<string>
+  skipSignal?: Set<string>,
+  geminiApiKey?: string
 ) {
   const bugs: Bug[] = [];
   const bugScreenshots = new Map<string, string>();
@@ -88,7 +89,7 @@ export async function runSession(
   // making wasted API calls and emitting stale narration after session ends.
   const sessionAbort = { aborted: false };
 
-  const geminiCtx: GeminiCallContext = { socket, abortSignal: sessionAbort };
+  const geminiCtx: GeminiCallContext = { socket, abortSignal: sessionAbort, apiKey: geminiApiKey };
   const startedAt = new Date().toISOString();
 
   try {
@@ -270,7 +271,7 @@ async function executeStepWithVisionLoop(
     return false;
   };
 
-  const MAX_ACTIONS_PER_STEP = 3;
+  const MAX_ACTIONS_PER_STEP = 7;
   let lastScreenshot = "";
 
   for (let actionNum = 0; actionNum < MAX_ACTIONS_PER_STEP; actionNum++) {
@@ -299,7 +300,8 @@ async function executeStepWithVisionLoop(
         emitNarration(socket, `[INFO] Vision model rate limited, trying lite fallback...`);
         action = await fallbackDecideAction(screenshot, aom, step, ctx);
       } else {
-        emitNarration(socket, `[INFO] Vision model error, trying fallback...`);
+        console.error(`[Vision] Model error (${MODELS.vision}):`, visionErr?.message || visionErr);
+        emitNarration(socket, `[WARN] Vision model error: ${visionErr?.message?.slice(0, 80) ?? "unknown"}. Trying fallback...`);
         try {
           action = await fallbackDecideAction(screenshot, aom, step, ctx);
         } catch (fallbackErr: any) {
@@ -333,9 +335,9 @@ async function executeStepWithVisionLoop(
     const actionDesc = formatAction(action);
     emitNarration(socket, `[INFO] Action: ${actionDesc}`);
 
-    // Fire-and-forget narration (non-critical)
+    // Fire-and-forget narration (non-critical) — suppress if step was aborted
     generateNarration(action, ctx)
-      .then((n) => emitNarration(socket, `[INFO] ${n}`))
+      .then((n) => { if (!abortToken?.aborted) emitNarration(socket, `[INFO] ${n}`); })
       .catch(() => {});
 
     // ┌──────────────────────────────────────────────┐
@@ -363,6 +365,9 @@ async function executeStepWithVisionLoop(
       emitNarration(socket, `[ERROR] Action failed: ${caughtActionErr.message}`);
 
       if (actionNum < MAX_ACTIONS_PER_STEP - 1) {
+        // Guard: don't self-heal if step was already skipped/aborted
+        if (checkAbort()) return { status: "incomplete" };
+
         emitNarration(socket, "[INFO] Attempting self-heal...");
 
         const healShot = await takeScreenshot();
@@ -371,6 +376,8 @@ async function executeStepWithVisionLoop(
 
         try {
           const healAction = await retryAction(caughtActionErr.message, healShot, healAom, step, ctx);
+          // Guard: don't execute heal action if aborted while Gemini was thinking
+          if (checkAbort()) return { status: "incomplete" };
           await executeComputerAction(healAction);
           emitNarration(socket, "[OK] Recovered with new approach");
           actionLog.push(`Self-healed: ${formatAction(healAction)}`);
@@ -390,7 +397,10 @@ async function executeStepWithVisionLoop(
     } else {
       actionLog.push(actionDesc);
       await new Promise((r) => setTimeout(r, 500));
-      break;
+      // Don't break — continue the loop so the model can take more actions
+      // toward the goal (e.g. click field → type → press Enter).
+      // The loop exits when: STEP_COMPLETE is returned, MAX_ACTIONS_PER_STEP
+      // is reached, or an abort/skip is detected at the top of the next iteration.
     }
   }
 
