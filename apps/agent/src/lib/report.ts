@@ -1,4 +1,17 @@
+import { initializeApp, getApps } from "firebase-admin/app";
+import { getFirestore } from "firebase-admin/firestore";
 import type { Bug, BugReport, FailureType, ReportStatus, TestPlan } from "@verifai/types";
+import { uploadScreenshot } from "./gcs.js";
+import { createBugTicket } from "./jira.js";
+import { generateBugDescription } from "./gemini.js";
+
+// Initialize Firebase Admin (safe to call multiple times)
+if (getApps().length === 0) {
+  initializeApp({ projectId: process.env.GCP_PROJECT_ID });
+}
+
+const db = getFirestore();
+const COLLECTION = process.env.FIRESTORE_COLLECTION || "reports";
 
 // ─── Report Compilation ──────────────────────────────────
 
@@ -69,6 +82,90 @@ function buildSummary(
 
     case "incomplete":
       return `[WARN] Session incomplete — ${incomplete} step(s) skipped. No bugs detected in completed steps.`;
+  }
+}
+
+// ─── Full report pipeline ────────────────────────────────
+
+/**
+ * Full report pipeline:
+ * 1. Upload bug screenshots to GCS
+ * 2. Enrich bug descriptions with Gemini
+ * 3. Create Jira tickets for each bug
+ * 4. Compile the BugReport (using existing compileReport)
+ * 5. Save to Firestore
+ *
+ * Every step is wrapped in try/catch — partial failures don't block the report.
+ */
+export async function compileAndSaveReport(
+  sessionId: string,
+  testPlan: TestPlan,
+  bugs: Bug[],
+  bugScreenshots: Map<string, string>,
+  startedAt: string
+): Promise<string> {
+  // 1. Upload screenshots + enrich bug descriptions + create Jira tickets
+  for (const bug of bugs) {
+    const screenshotBase64 = bugScreenshots.get(bug.stepId);
+
+    if (screenshotBase64) {
+      // Upload screenshot to GCS
+      try {
+        bug.screenshotUrl = await uploadScreenshot(screenshotBase64, sessionId, bug.stepId);
+        console.log(`[Report] Screenshot uploaded for ${bug.stepId}`);
+      } catch (err) {
+        console.error(`[Report] GCS upload failed for ${bug.stepId}:`, err);
+      }
+
+      // Enrich bug description with Gemini vision
+      try {
+        const step = testPlan.steps.find((s) => s.id === bug.stepId);
+        if (step) {
+          const generated = await generateBugDescription(step, bug.description, screenshotBase64);
+          bug.title = generated.title;
+          bug.description = generated.description;
+        }
+      } catch (err) {
+        console.error(`[Report] Bug description enrichment failed:`, err);
+      }
+    }
+
+    // Create Jira ticket
+    try {
+      const jiraResult = await createBugTicket(bug, testPlan.sourceTicket);
+      bug.jiraTicketKey = jiraResult.key;
+      bug.jiraTicketUrl = jiraResult.url;
+      console.log(`[Report] Jira ticket created: ${jiraResult.key}`);
+    } catch (err) {
+      console.error(`[Report] Jira ticket failed for ${bug.id}:`, err);
+    }
+  }
+
+  // 2. Compile the report
+  const report = compileReport(sessionId, testPlan, bugs, startedAt);
+
+  // 3. Save to Firestore
+  try {
+    await db.collection(COLLECTION).doc(report.id).set(report);
+    console.log(`[Report] Saved to Firestore: ${report.id}`);
+  } catch (err) {
+    console.error(`[Report] Firestore save failed:`, err);
+  }
+
+  return report.id;
+}
+
+/**
+ * Fetch a report from Firestore by ID
+ */
+export async function fetchReport(reportId: string): Promise<BugReport | null> {
+  try {
+    const doc = await db.collection(COLLECTION).doc(reportId).get();
+    if (!doc.exists) return null;
+    return doc.data() as BugReport;
+  } catch (err) {
+    console.error(`[Report] Fetch failed:`, err);
+    return null;
   }
 }
 

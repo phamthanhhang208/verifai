@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Download, Plus, Monitor, AlertTriangle, RefreshCw, Clock } from "lucide-react";
+import { Download, Plus, Monitor, AlertTriangle, RefreshCw, Clock, ExternalLink } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { BugReport, BugSeverity, IncompleteReason } from "@verifai/types";
 import { Badge } from "@/components/ui/badge";
@@ -212,30 +212,48 @@ export default function ResultsScreen({ report, onNewRun, onRetryIncomplete }: R
             </h2>
             {report.bugs.map((bug) => (
               <div key={bug.id} className="bg-surface-card rounded-2xl overflow-hidden flex card-glow">
-                {/* Screenshot placeholder */}
-                <div className="w-64 shrink-0 bg-surface-panel flex items-center justify-center group cursor-pointer min-h-40">
-                  <div className="text-center transition-opacity group-hover:opacity-60">
-                    <div className="w-16 h-12 bg-surface-bg rounded-lg mx-auto mb-2 flex items-center justify-center">
-                      <Monitor className="w-8 h-8 text-gray-600" />
+                {/* Screenshot */}
+                {bug.screenshotUrl ? (
+                  <a
+                    href={bug.screenshotUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="w-64 shrink-0 min-h-40 overflow-hidden"
+                  >
+                    <img
+                      src={bug.screenshotUrl}
+                      alt={`Screenshot for ${bug.title}`}
+                      className="w-full h-full object-cover"
+                    />
+                  </a>
+                ) : (
+                  <div className="w-64 shrink-0 bg-surface-panel flex items-center justify-center group cursor-default min-h-40">
+                    <div className="text-center">
+                      <div className="w-16 h-12 bg-surface-bg rounded-lg mx-auto mb-2 flex items-center justify-center">
+                        <Monitor className="w-8 h-8 text-gray-600" />
+                      </div>
+                      <span className="text-xs text-gray-600">No screenshot</span>
                     </div>
-                    <span className="text-xs text-gray-600">No screenshot</span>
                   </div>
-                </div>
+                )}
 
                 {/* Bug content */}
                 <div className="flex-1 p-6 min-w-0">
                   <div className="flex items-center gap-3 mb-3 flex-wrap">
                     <SeverityBadge severity={bug.severity} />
                     <span className="text-sm text-gray-500">{bug.id}</span>
-                    {bug.jiraTicketUrl && (
+                    {bug.jiraTicketUrl ? (
                       <a
                         href={bug.jiraTicketUrl}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="ml-auto text-sm text-indigo-400 hover:text-indigo-300 transition-colors shrink-0"
+                        className="ml-auto flex items-center gap-1 text-sm text-indigo-400 hover:text-indigo-300 transition-colors shrink-0"
                       >
-                        View Jira Ticket ↗
+                        {bug.jiraTicketKey || "View Jira Ticket"}
+                        <ExternalLink className="w-3 h-3" />
                       </a>
+                    ) : (
+                      <span className="ml-auto text-sm text-gray-600 shrink-0">No Jira ticket</span>
                     )}
                   </div>
                   <h3 className="text-base font-medium text-white mb-4">{bug.title}</h3>

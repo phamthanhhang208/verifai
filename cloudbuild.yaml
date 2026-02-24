@@ -1,0 +1,50 @@
+steps:
+  # Build agent image
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-t'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/verifai/verifai-agent:$COMMIT_SHA'
+      - '-t'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/verifai/verifai-agent:latest'
+      - '-f'
+      - 'apps/agent/Dockerfile'
+      - '.'
+
+  # Push both tags
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', '${_REGION}-docker.pkg.dev/$PROJECT_ID/verifai/verifai-agent:$COMMIT_SHA']
+
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', '${_REGION}-docker.pkg.dev/$PROJECT_ID/verifai/verifai-agent:latest']
+
+  # Deploy to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'verifai-agent'
+      - '--image'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/verifai/verifai-agent:$COMMIT_SHA'
+      - '--region'
+      - '${_REGION}'
+      - '--memory'
+      - '2Gi'
+      - '--cpu'
+      - '2'
+      - '--timeout'
+      - '600'
+      - '--concurrency'
+      - '5'
+      - '--max-instances'
+      - '3'
+      - '--session-affinity'
+      - '--allow-unauthenticated'
+
+substitutions:
+  _REGION: us-central1
+
+images:
+  - '${_REGION}-docker.pkg.dev/$PROJECT_ID/verifai/verifai-agent:$COMMIT_SHA'
+  - '${_REGION}-docker.pkg.dev/$PROJECT_ID/verifai/verifai-agent:latest'

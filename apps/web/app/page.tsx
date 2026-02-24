@@ -1,8 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import type { TestPlan, BugReport } from "@verifai/types";
-import { mockTestPlan, mockBugReport } from "@/lib/mock-data";
+import type { TestPlan, BugReport, Bug } from "@verifai/types";
+import { mockTestPlan } from "@/lib/mock-data";
 import { socket } from "@/lib/socket";
 import Header from "@/components/Header";
 import ConfigureScreen from "@/components/ConfigureScreen";
@@ -42,6 +42,7 @@ export default function Home() {
   const [reportId, setReportId] = useState<string | null>(null);
   const [incompleteStepIds, setIncompleteStepIds] = useState<string[]>([]);
   const [userIncompleteStepIds, setUserIncompleteStepIds] = useState<string[]>([]);
+  const [collectedBugs, setCollectedBugs] = useState<Bug[]>([]);
 
   // Shared socket event handler — used by both initial run and retry
   const attachSocketHandler = () => {
@@ -78,6 +79,23 @@ export default function Home() {
           });
           if (event.status === "incomplete") {
             setIncompleteStepIds((prev) => [...prev, event.stepId]);
+          }
+          // Collect bugs from failed steps for local report fallback
+          if (event.status === "failed" && event.finding) {
+            setCollectedBugs((prev) => [
+              ...prev,
+              {
+                id: `bug-${Date.now()}-${event.stepId}`,
+                stepId: event.stepId,
+                title: `Failed step`,
+                description: event.finding!,
+                severity: event.severity || "medium",
+                screenshotUrl: "",
+                expectedBehavior: "",
+                actualBehavior: event.finding!,
+                failureType: event.failureType,
+              } as Bug,
+            ]);
           }
           break;
 
@@ -135,6 +153,7 @@ export default function Home() {
     setIsRunning(true);
     setIsComplete(false);
     setIncompleteStepIds([]);
+    setCollectedBugs([]);
     setTranscriptLines([]);
     setCurrentScreenshot(null);
 
@@ -165,6 +184,7 @@ export default function Home() {
     setIsRunning(true);
     setIsComplete(false);
     setIncompleteStepIds((prev) => prev.filter((id) => id !== stepId));
+    setCollectedBugs([]);
     setTranscriptLines([]);
     setCurrentScreenshot(null);
 
@@ -196,6 +216,7 @@ export default function Home() {
     setIsRunning(true);
     setIsComplete(false);
     setIncompleteStepIds([]);
+    setCollectedBugs([]);
     setCurrentScreen(2);
 
     const agentUrl = process.env.NEXT_PUBLIC_AGENT_URL || "http://localhost:3001";
@@ -208,11 +229,69 @@ export default function Home() {
     });
   };
 
-  const handleViewReport = () => {
-    // Phase 6 TODO: fetch real report from Firestore using reportId
-    void reportId;
-    setReport(mockBugReport);
-    setCurrentScreen(3);
+  const handleViewReport = async () => {
+    // Try fetching the real report from Firestore via API
+    if (reportId && !reportId.startsWith("rpt-")) {
+      try {
+        const res = await fetch(`/api/report/${reportId}`);
+        if (res.ok) {
+          const reportData: BugReport = await res.json();
+          setReport(reportData);
+          setCurrentScreen(3);
+          return;
+        }
+      } catch {
+        // Fall through to local construction
+      }
+    }
+
+    // Local fallback: construct report from current testPlan state
+    if (testPlan) {
+      const passedSteps = testPlan.steps.filter((s) => s.status === "passed").length;
+      const failedSteps = testPlan.steps.filter((s) => s.status === "failed").length;
+      const incompleteSteps = testPlan.steps.filter((s) => s.status === "incomplete").length;
+      const completedSteps = passedSteps + failedSteps;
+      const total = testPlan.steps.length;
+
+      const reportStatus =
+        failedSteps > 0 ? "failed"
+        : incompleteSteps > 0 ? "incomplete"
+        : "passed";
+
+      const passRate =
+        completedSteps > 0
+          ? Math.round((passedSteps / completedSteps) * 1000) / 10
+          : total === incompleteSteps ? 0 : 100;
+
+      let summary = "";
+      if (reportStatus === "failed") {
+        summary = `Found ${failedSteps} bug(s).${incompleteSteps > 0 ? ` ${incompleteSteps} step(s) could not complete.` : ""}`;
+      } else if (reportStatus === "incomplete") {
+        summary = `${incompleteSteps} step(s) could not complete. No bugs found in completed steps.`;
+      } else {
+        summary = `All ${total} steps passed. No bugs found.`;
+      }
+
+      setReport({
+        id: reportId || `local-${Date.now()}`,
+        testPlanId: testPlan.id,
+        sourceTicket: testPlan.sourceTicket,
+        targetUrl: testPlan.targetUrl,
+        steps: testPlan.steps,
+        bugs: collectedBugs,
+        totalSteps: total,
+        passedSteps,
+        failedSteps,
+        incompleteSteps,
+        completedSteps,
+        passRate,
+        reportStatus: reportStatus as BugReport["reportStatus"],
+        summary,
+        createdAt: testPlan.createdAt,
+        completedAt: new Date().toISOString(),
+      });
+      setCurrentScreen(3);
+    }
   };
 
   const handleNewRun = () => {
@@ -229,6 +308,7 @@ export default function Home() {
     setTranscriptLines([]);
     setIncompleteStepIds([]);
     setUserIncompleteStepIds([]);
+    setCollectedBugs([]);
   };
 
   return (
@@ -243,7 +323,7 @@ export default function Home() {
         <ExecuteScreen
           testPlan={testPlan}
           onRunSession={handleRunSession}
-          onViewReport={handleViewReport}
+          onViewReport={() => { void handleViewReport(); }}
           onRetryIncomplete={handleRetryIncomplete}
           onSkipStep={handleSkipStep}
           onRetryStep={handleRetryStep}

@@ -16,6 +16,7 @@ import {
   type GeminiCallContext,
 } from "../lib/gemini.js";
 import { GeminiRateLimitError } from "../lib/models.js";
+import { compileAndSaveReport } from "../lib/report.js";
 
 // ─── Helpers ────────────────────────────────────────────
 
@@ -88,6 +89,7 @@ export async function runSession(
   const sessionAbort = { aborted: false };
 
   const geminiCtx: GeminiCallContext = { socket, abortSignal: sessionAbort };
+  const startedAt = new Date().toISOString();
 
   try {
     emitNarration(socket, "[INFO] Launching headless browser...");
@@ -192,7 +194,33 @@ export async function runSession(
     await closeBrowser().catch(() => {});
   }
 
-  const reportId = `rpt-${Date.now()}`;
+  // ── Phase 6: Compile report, upload screenshots, create Jira tickets ──
+  let reportId = `rpt-${Date.now()}`;
+
+  emitNarration(socket, "[INFO] Compiling report...");
+
+  try {
+    reportId = await compileAndSaveReport(
+      _sessionId,
+      testPlan,
+      bugs,
+      bugScreenshots,
+      startedAt
+    );
+
+    const jiraCount = bugs.filter((b) => b.jiraTicketKey).length;
+    const gcsCount = bugs.filter((b) => b.screenshotUrl).length;
+
+    if (bugs.length > 0) {
+      emitNarration(socket, `[OK] Report saved. ${jiraCount}/${bugs.length} Jira ticket(s) created. ${gcsCount} screenshot(s) uploaded.`);
+    } else {
+      emitNarration(socket, `[OK] Report saved to Firestore.`);
+    }
+  } catch (err: any) {
+    console.error("[Report] Pipeline failed:", err);
+    emitNarration(socket, `[WARN] Report compilation had errors: ${err.message}. Using local report.`);
+  }
+
   socket.emit("event", { type: "session_complete", reportId } as SessionCompleteEvent);
 
   let finalNarration: string;
