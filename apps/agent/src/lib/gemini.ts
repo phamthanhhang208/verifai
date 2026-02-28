@@ -10,6 +10,7 @@ import {
   callGeminiWithBackoff,
   waitForRateLimit,
   withRetry,
+  getNextTtsModel,
 } from "./models.js";
 
 const SERVER_KEY = process.env.GEMINI_API_KEY;
@@ -63,8 +64,7 @@ export async function decideAction(
 
     console.log(`[Gemini] decideAction → model: ${MODELS.vision}`);
 
-    //console.log(Environment.ENVIRONMENT_BROWSER.toString());
-    const response = await getAI(ctx?.apiKey).models.generateContent({
+    const requestBody = {
       model: MODELS.vision,
       contents: [
         {
@@ -110,7 +110,9 @@ export async function decideAction(
           },
         ],
       },
-    });
+    };
+    // @ts-expect-error: Weird querk of GoogleGenAI
+    const response = await getAI(ctx?.apiKey).models.generateContent(requestBody);
 
     return parseComputerUseResponse(response);
   };
@@ -173,6 +175,9 @@ CRITICAL INSTRUCTIONS:
 - Look carefully at what is MISSING from the current state — what action has NOT been done yet?
 - The task may require filling multiple fields AND clicking a submit/confirm button — make sure ALL parts are done
 - Choose the SINGLE NEXT action that makes the most progress toward the expected outcome
+- NEVER change the input data, credentials, usernames, passwords, or any test values specified in the task — use EXACTLY what the task says
+- Do NOT try to work around errors by using different values — if the task says to use "locked_out_user", you MUST use "locked_out_user" even if it causes an error
+- If an error appears on screen and the EXPECTED OUTCOME describes that error, respond with text "STEP_COMPLETE" — the error IS the expected result
 - If the expected outcome IS already fully visible, respond with text "STEP_COMPLETE"
 - Be precise with pixel coordinates
 
@@ -257,7 +262,9 @@ EXPECTED: ${step.expectedBehavior}
 Accessibility tree (with element center coordinates @(x,y)):
 ${aomSnapshot}
 
-Look at the screenshot carefully. Try a DIFFERENT approach — use the @(x,y) coordinates from the accessibility tree for precise targeting. Viewport is 1280×720. Use the computer_use tool.`,
+Look at the screenshot carefully. Try a DIFFERENT coordinate or element target — use the @(x,y) coordinates from the accessibility tree for precise targeting.
+IMPORTANT: Do NOT change any test data, credentials, usernames, or input values — only fix the targeting (which element to click/type into). Stick to exactly what the task says.
+Viewport is 1280×720. Use the computer_use tool.`,
             },
           ],
         },
@@ -512,11 +519,22 @@ export async function verifyStep(
           parts: [
             { inlineData: { mimeType: "image/jpeg", data: screenshotBase64 } },
             {
-              text: `QA verification. Look at this screenshot. Did the expected behavior happen?
+              text: `QA verification. Carefully examine this screenshot. Did the expected behavior happen?
 
 Expected: ${expectedBehavior}
 
-Return ONLY JSON, no markdown: {"passed":true/false,"finding":"what you see","severity":"high"|"medium"|"low"}
+VERIFICATION CHECKLIST — check ALL of these:
+1. Is the expected content visible on screen?
+2. Are all images loading correctly? Look for: broken images, placeholder images, or images that don't match their labels (e.g. a dog photo for a "Backpack" product is a bug)
+3. Are images UNIQUE where they should be? If multiple different items all show the SAME image, that is a bug
+4. Do text labels, names, and prices look correct and match what you'd expect?
+5. Are there any error messages, broken layouts, or visual glitches?
+
+Password fields showing masked characters (dots/asterisks) is NORMAL — not a bug.
+
+Be STRICT: if the expected behavior says "correct images" and the images are wrong, duplicated, or don't match their product names, that is a FAILURE.
+
+Return ONLY JSON, no markdown: {"passed":true/false,"finding":"what you see — be specific about what's wrong","severity":"high"|"medium"|"low"}
 (severity only needed when passed=false)`,
             },
           ],
@@ -631,30 +649,56 @@ export async function generateTestPlan(
     console.log(`[Gemini] generateTestPlan → model: ${MODELS.pro}`);
     const r = await getAI(apiKey).models.generateContent({
       model: MODELS.pro,
-      contents: `You are a QA engineer. Parse this feature specification into a sequential browser test plan.
+      contents: `You are a senior QA engineer. You are given a REAL Jira ticket. Convert it into a complete browser test plan.
 
-Spec:
+═══ JIRA TICKET ═══
 ${specText}
+═══ END TICKET ═══
 
 Target URL: ${targetUrl}
 
-Return ONLY a JSON array of 5-7 test steps (no markdown fences). Each step object:
-{"text":"Imperative action (e.g. Click the Login button)","expectedBehavior":"What should be visible/true after this action","targetElement":"Optional CSS selector or element description"}
+TICKET TEMPLATE — the ticket typically follows this structure:
+- Title: feature name
+- Description: user story ("As a [user] I want to [action] so that [outcome]")
+- Target Application: the URL to test
+- Test Account: username / password for login (USE THESE EXACT CREDENTIALS)
+- Acceptance Criteria: a list of expected behaviors that MUST ALL be tested
 
-Rules:
+YOUR TASK:
+1. Parse the acceptance criteria list from the ticket
+2. Create test steps that cover EVERY SINGLE acceptance criterion
+3. Each criterion → one or more atomic browser steps
+4. Group related steps with proper dependencies
+
+Return ONLY a JSON array (no markdown fences). Each step object:
+{"id":"s1","text":"Imperative browser action","expectedBehavior":"What should be visible after","targetElement":"Optional CSS selector","dependsOn":["s0"]}
+
+STEP ID FORMAT: "s1", "s2", "s3", etc.
+
+DEPENDENCY RULES (dependsOn field):
+- Each step lists the step IDs it depends on
+- If a dependency fails, this step is automatically SKIPPED
+- First step (navigate) has no dependencies: "dependsOn": []
+- Steps that require login should depend on the login step
+- Independent acceptance criteria should NOT depend on each other — only on shared prerequisites (like login)
+- This lets the test runner skip impossible steps but still test independent criteria
+
+CRITICAL RULES:
 - First step must navigate to: ${targetUrl}
-- Steps must be sequential and each build on the previous
-- Focus on the acceptance criteria happy path
-- Each step must be atomic and independently verifiable
+- If the ticket has a Test Account, use THOSE EXACT credentials — do NOT substitute different ones
+- EVERY acceptance criterion MUST be covered by at least one test step
+- Use the EXACT field names, button labels, and values from the ticket
+- Each step = one atomic browser action (click, type, navigate, scroll, or verify)
 - Do not include any explanations outside the JSON array`,
     });
 
     const raw = JSON.parse(cleanJSON(r.text || "[]"));
     return (raw as any[]).map((s: any, i: number) => ({
-      id: `s${i + 1}`,
+      id: s.id || `s${i + 1}`,
       text: s.text || s.action || "",
       expectedBehavior: s.expectedBehavior || s.expected || "",
       targetElement: s.targetElement,
+      dependsOn: Array.isArray(s.dependsOn) ? s.dependsOn : undefined,
       status: "pending" as const,
     }));
   };
@@ -671,6 +715,93 @@ Rules:
 // }
 
 // listModels();
+
+// ════════════════════════════════════════════════════════
+// TTS MODEL — Gemini 2.5 Flash TTS (3 RPM)
+// Generates voice narration for key QA moments.
+// Fire-and-forget — failures are non-critical.
+// ════════════════════════════════════════════════════════
+
+/**
+ * Generate voice narration using Gemini 2.5 Flash TTS.
+ * Returns base64-encoded audio. Fire-and-forget — failures are non-critical.
+ *
+ * Rate limit: 3 RPM — only narrate key moments, not every action.
+ */
+export async function generateVoiceNarration(
+  text: string,
+  ctx?: GeminiCallContext,
+): Promise<{ audio: string; mimeType: string } | null> {
+  // Skip if TTS not desired or text is too short
+  if (!text || text.length < 10) return null;
+
+  try {
+    const ttsModel = getNextTtsModel();
+    const callFn = async () => {
+      //await waitForRateLimit(MODELS.tts);
+
+      const response = await getAI(ctx?.apiKey).models.generateContent({
+        model: ttsModel,
+
+        contents: [
+          {
+            role: "user",
+            //parts: [{ text: 'Say cheerfully: Have a wonderful day!' }]
+
+            parts: [
+              {
+                text: `You are the voice of a professional QA testing agent called Verifai. 
+            Speak this narration clearly and concisely in a calm, confident, technical tone. 
+            Keep it brief — one or two sentences max.
+
+            Narrate: "${text}"`,
+              },
+            ],
+          },
+        ],
+        config: {
+          responseModalities: ['AUDIO'],
+          speechConfig: {
+            voiceConfig: {
+              prebuiltVoiceConfig: {
+                voiceName: "Kore",
+              },
+            },
+          },
+        },
+      });
+
+      // Extract audio from response
+      const candidate = response.candidates?.[0];
+      if (!candidate?.content?.parts) return null;
+
+      for (const part of candidate.content.parts) {
+        if (part.inlineData?.mimeType?.startsWith("audio/")) {
+          console.log(`[TTS] Generated audio: ${part?.inlineData?.data?.length} bytes, type ${part.inlineData.mimeType}`);
+          return {
+            audio: part.inlineData.data!, // base64
+            mimeType: part.inlineData.mimeType,
+          };
+        }
+      }
+
+      return null;
+    };
+
+    if (ctx) {
+      return await callGeminiWithBackoff(callFn, {
+        model: ttsModel,
+        socket: ctx.socket,
+        abortSignal: ctx.abortSignal,
+      });
+    }
+    return await callFn();
+  } catch (err: any) {
+    // TTS is non-critical — log and return null
+    console.warn(`[TTS] Voice generation failed: ${err.message}`);
+    return null;
+  }
+}
 
 // Legacy alias — Phase 3 code may import sendToolResponse
 export const sendToolResponse = retryAction;

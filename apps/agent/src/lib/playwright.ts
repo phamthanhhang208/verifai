@@ -360,7 +360,11 @@ export async function executeComputerAction(action: ComputerUseAction): Promise<
       }
       console.log(`[Action] type — current value: "${existingValue.slice(0, 40)}" → will type: "${action.text.slice(0, 40)}"`);
 
-      await page.keyboard.press("Control+a");
+      // Clear existing field content: select all via keyboard, delete, then type new value
+      await page.keyboard.press("Home");
+      await page.keyboard.press("Shift+End");
+      await page.keyboard.press("Backspace");
+      await new Promise((r) => setTimeout(r, 50));
       await page.keyboard.type(action.text, { delay: 30 });
       break;
     }

@@ -11,7 +11,8 @@ import {
   RotateCcw,
   Terminal,
   Monitor,
-  Mic,
+  Volume2,
+  VolumeX,
   RefreshCw,
   SkipForward,
   AlertTriangle,
@@ -44,6 +45,8 @@ interface ExecuteScreenProps {
   transcriptLines: TranscriptLine[];
   incompleteStepIds: string[];
   isLoadingReport: boolean;
+  voiceEnabled: boolean;
+  onToggleVoice: () => void;
 }
 
 function StatusIcon({ status }: { status: StepStatus }) {
@@ -99,6 +102,8 @@ export default function ExecuteScreen({
   transcriptLines,
   incompleteStepIds,
   isLoadingReport,
+  voiceEnabled,
+  onToggleVoice,
 }: ExecuteScreenProps) {
   const transcriptEndRef = useRef<HTMLDivElement>(null);
   const [stepTexts, setStepTexts] = useState<Record<string, string>>(
@@ -387,12 +392,14 @@ export default function ExecuteScreen({
             )}
 
             <button
-              className={cn(
-                "absolute bottom-4 right-4 w-10 h-10 rounded-full flex items-center justify-center transition-all",
-                isRunning ? "bg-indigo-500 animate-pulse" : "bg-[#1A1C20]"
-              )}
+              onClick={onToggleVoice}
+              className={`absolute bottom-4 right-4 w-10 h-10 rounded-full flex items-center justify-center transition-all ${voiceEnabled
+                  ? "bg-indigo-500/20 border border-indigo-500/40 text-indigo-400"
+                  : "bg-[#1A1C20] border border-gray-700 text-gray-500 hover:text-gray-400"
+                }`}
+              title={voiceEnabled ? "Disable voice narration" : "Enable voice narration"}
             >
-              <Mic className="w-4 h-4 text-white" />
+              {voiceEnabled ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
             </button>
           </div>
         </div>

@@ -12,8 +12,15 @@ export const MODELS = {
   lite: "gemini-2.5-flash-lite", // verification, narration, bug gen, spec parsing — 10 RPM
   flash: "gemini-2.5-flash", // escalated / fallback reasoning — 10 RPM
   pro: "gemini-2.5-pro", // spec parsing — deeper reasoning
-  tts: "gemini-2.5-flash-tts-preview",
+  tts_options: ["gemini-2.5-flash-preview-tts", "gemini-2.5-pro-preview-tts"],
 } as const;
+
+let ttsIndex = 0;
+export function getNextTtsModel(): string {
+  const model = MODELS.tts_options[ttsIndex];
+  ttsIndex = (ttsIndex + 1) % MODELS.tts_options.length;
+  return model;
+}
 
 // ─── Typed error for exhausted rate limits ───────────────
 // Thrown by callGeminiWithBackoff when all retries are exhausted.

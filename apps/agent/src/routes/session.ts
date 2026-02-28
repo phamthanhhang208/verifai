@@ -29,11 +29,13 @@ import {
   escalatedDecideAction,
   verifyStep,
   generateNarration,
+  generateVoiceNarration,
   retryAction,
   fallbackDecideAction,
   type GeminiCallContext,
 } from "../lib/gemini.js";
 import { GeminiRateLimitError, MODELS } from "../lib/models.js";
+import type { VoiceEvent } from "@verifai/types";
 import { compileAndSaveReport } from "../lib/report.js";
 import {
   DEMO_FALLBACK_ENABLED,
@@ -76,6 +78,22 @@ function emitNarration(socket: Socket, text: string) {
     text,
     timestamp: new Date().toISOString(),
   } as NarrationEvent);
+}
+
+function emitVoice(socket: Socket, text: string, ctx?: GeminiCallContext) {
+  // Fire-and-forget — don't await, don't block execution
+  generateVoiceNarration(text, ctx)
+    .then((result) => {
+      if (result) {
+        socket.emit("event", {
+          type: "voice",
+          audio: result.audio,
+          mimeType: result.mimeType,
+          text,
+        } as VoiceEvent);
+      }
+    })
+    .catch(() => { }); // Silently ignore TTS failures
 }
 
 function emitScreenshot(
@@ -135,6 +153,7 @@ export async function runSession(
   // Flipped to true when vision fails and fallback succeeds; reset to false
   // if vision later recovers so we don't permanently downgrade.
   const modelState = { useFallback: false, escalated: false };
+  const failedStepIds = new Set<string>(); // Track failed steps for dependency checking
 
   try {
     emitNarration(socket, "[INFO] Launching headless browser...");
@@ -146,9 +165,36 @@ export async function runSession(
     const initShot = await takeScreenshot();
     emitScreenshot(socket, "init", initShot, targetUrl);
     emitNarration(socket, "[OK] Target application loaded");
+    emitVoice(socket, `Starting QA session against ${targetUrl}`, geminiCtx);
 
     for (let i = 0; i < testPlan.steps.length; i++) {
       const step = testPlan.steps[i];
+
+      // ── DEPENDENCY CHECK: Skip if any dependency failed ──
+      if (step.dependsOn && step.dependsOn.length > 0) {
+        const failedDep = step.dependsOn.find(depId => failedStepIds.has(depId));
+        if (failedDep) {
+          const depStep = testPlan.steps.find(s => s.id === failedDep);
+          const depName = depStep ? depStep.text : failedDep;
+          socket.emit("event", {
+            type: "step_start",
+            stepId: step.id,
+            stepIndex: i,
+          } as StepStartEvent);
+          emitNarration(socket, `[INFO] Step ${i + 1}/${testPlan.steps.length}: ${step.text}`);
+          emitNarration(socket, `[WARN] Skipped — depends on failed step: "${depName}"`);
+          step.status = "incomplete";
+          incompleteCount++;
+          socket.emit("event", {
+            type: "step_result",
+            stepId: step.id,
+            status: "incomplete",
+            finding: `Skipped — depends on failed step "${depName}"`,
+          } as StepResultEvent);
+          actionLog.push(`Step "${step.text}" → skipped (depends on ${failedDep})`);
+          continue;
+        }
+      }
 
       // User-requested skip (before starting the step)
       if (skipSignal?.has(step.id)) {
@@ -182,6 +228,7 @@ export async function runSession(
         socket,
         `[INFO] Step ${i + 1}/${testPlan.steps.length}: ${step.text}`,
       );
+      emitVoice(socket, `Step ${i + 1}: ${step.text}`, geminiCtx);
 
       // Per-step abort token — set in finally so background vision loop stops ASAP
       const abortToken = { aborted: false };
@@ -250,6 +297,11 @@ export async function runSession(
       }
       if (result.bug) bugs.push(result.bug);
 
+      // Track failed step IDs for dependency checking
+      if (result.status === "failed") {
+        failedStepIds.add(step.id);
+      }
+
       socket.emit("event", {
         type: "step_result",
         stepId: step.id,
@@ -259,6 +311,15 @@ export async function runSession(
         failureType: result.failureType,
         incompleteReason: result.incompleteReason,
       } as StepResultEvent);
+
+      // Voice narration for step results (fire-and-forget)
+      if (result.status === "passed") {
+        emitVoice(socket, `Step ${i + 1} passed`, geminiCtx);
+      } else if (result.status === "failed" && result.bug) {
+        emitVoice(socket, `Bug found: ${result.bug.title}`, geminiCtx);
+      } else if (result.status === "incomplete") {
+        emitVoice(socket, `Step ${i + 1} skipped`, geminiCtx);
+      }
 
       actionLog.push(`Step "${step.text}" → ${result.status}`);
 
@@ -320,9 +381,11 @@ export async function runSession(
     );
   }
 
+  console.log(`[Session] Emitting session_complete with ${bugs.length} bugs:`, bugs.map(b => ({ id: b.id, jiraTicketKey: b.jiraTicketKey, jiraTicketUrl: b.jiraTicketUrl, screenshotUrl: b.screenshotUrl?.slice(0, 50) })));
   socket.emit("event", {
     type: "session_complete",
     reportId,
+    bugs,
   } as SessionCompleteEvent);
 
   let finalNarration: string;
@@ -336,6 +399,7 @@ export async function runSession(
     finalNarration = `[OK] Session complete — all steps passed, 0 bugs found.`;
   }
   emitNarration(socket, finalNarration);
+  emitVoice(socket, finalNarration.replace(/\[.*?\]\s*/g, ""), geminiCtx);
 }
 
 // ─── Pause helper ───────────────────────────────────────
@@ -385,8 +449,9 @@ async function executeStepWithVisionLoop(
     return false;
   };
 
-  const MAX_ACTIONS_PER_STEP = 7;
+  const MAX_ACTIONS_PER_STEP = 5;
   let lastScreenshot = "";
+  let completeRejections = 0;
 
   console.log(`\n${"─".repeat(60)}`);
   console.log(`[Step ${step.id}] "${step.text}"`);
@@ -413,7 +478,7 @@ async function executeStepWithVisionLoop(
     let action: ComputerUseAction | undefined;
 
     if (modelState.escalated) {
-      // Vision model was confused (premature STEP_COMPLETE) — use pro model
+      // Vision model said STEP_COMPLETE but verify disagreed — use pro model
       try {
         action = await escalatedDecideAction(screenshot, aom, step, actionLog, ctx);
         console.log(`[Step ${step.id}] escalated pro model responded`);
@@ -441,11 +506,10 @@ async function executeStepWithVisionLoop(
         ) {
           throw fallbackErr;
         }
-        // Fallback also broken — try vision as last resort
         emitNarration(socket, `[WARN] Fallback model error, retrying with vision...`);
         try {
           action = await decideAction(screenshot, aom, step, actionLog, ctx);
-          modelState.useFallback = false; // Vision is healthy again
+          modelState.useFallback = false;
         } catch {
           emitNarration(socket, `[ERROR] All models failed`);
           if (actionNum < MAX_ACTIONS_PER_STEP - 1) continue;
@@ -474,7 +538,7 @@ async function executeStepWithVisionLoop(
         }
         try {
           action = await fallbackDecideAction(screenshot, aom, step, ctx);
-          modelState.useFallback = true; // Stick with fallback for subsequent steps
+          modelState.useFallback = true;
           emitNarration(socket, `[INFO] Fallback succeeded — using fallback model for remaining steps`);
         } catch (fallbackErr: any) {
           if (
@@ -500,15 +564,12 @@ async function executeStepWithVisionLoop(
     if (checkAbort()) return { status: "incomplete" };
 
     // ┌──────────────────────────────────────────────┐
-    // │ 2b. Check if step is already done            │
+    // │ 2b. Check if AI says step is already done    │
     // └──────────────────────────────────────────────┘
     if (
       action.type === "screenshot" &&
       action.reasoning?.toLowerCase().includes("complete")
     ) {
-      // Don't break blindly — verify the expected outcome is actually on screen.
-      // Gemini may report "complete" too early (e.g. after filling form fields but
-      // before clicking Submit), which would skip the remaining required action.
       emitNarration(socket, "[INFO] AI reports step complete — verifying...");
       try {
         const checkShot = await takeScreenshot();
@@ -517,11 +578,34 @@ async function executeStepWithVisionLoop(
           emitNarration(socket, `[OK] Confirmed — step outcome visible: ${quickCheck.finding}`);
           break;
         }
+
+        completeRejections++;
+
+        if (completeRejections >= 2) {
+          // Verify rejected STEP_COMPLETE twice — it's detecting a real bug, not a vision misread
+          emitNarration(socket, `[ERROR] Verification failed: ${quickCheck.finding}`);
+          return {
+            status: "failed",
+            failureType: "assertion" as const,
+            lastScreenshot: checkShot,
+            bug: {
+              id: `bug-${Date.now()}`,
+              stepId: step.id,
+              title: `Step failed: ${step.text}`,
+              description: step.text,
+              expectedBehavior: step.expectedBehavior,
+              actualBehavior: quickCheck.finding,
+              severity: quickCheck.severity ?? "medium",
+              screenshotUrl: "",
+            },
+          };
+        }
+
+        // First rejection — escalate to pro in case vision misread the screen
         emitNarration(socket, `[INFO] Expected outcome not yet visible (${quickCheck.finding}) — escalating to pro model`);
         console.log(`[Step ${step.id}] STEP_COMPLETE rejected — escalating to pro model`);
         modelState.escalated = true;
       } catch {
-        // verifyStep failed — safer to keep going than to break early
         emitNarration(socket, "[INFO] Could not verify step completion — continuing");
       }
       continue;
@@ -533,7 +617,7 @@ async function executeStepWithVisionLoop(
     const actionDesc = formatAction(action);
     emitNarration(socket, `[INFO] Action: ${actionDesc}`);
 
-    // Fire-and-forget narration (non-critical) — suppress if step was aborted
+    // Fire-and-forget narration (non-critical)
     generateNarration(action, ctx)
       .then((n) => {
         if (!abortToken?.aborted) emitNarration(socket, `[INFO] ${n}`);
@@ -551,10 +635,10 @@ async function executeStepWithVisionLoop(
     }
 
     // ┌──────────────────────────────────────────────┐
-    // │ 5. SELF-HEAL — If action failed, retry once  │
+    // │ 5. SELF-HEAL — If action failed, fix coords  │
     // └──────────────────────────────────────────────┘
     if (caughtActionErr) {
-      // Playwright infrastructure failure → skip self-heal, mark incomplete
+      // Playwright infrastructure failure → mark incomplete
       if (caughtActionErr instanceof PlaywrightActionError) {
         const isNav = caughtActionErr.isNavigation;
         emitNarration(
@@ -568,17 +652,16 @@ async function executeStepWithVisionLoop(
         };
       }
 
-      // Regular action error (bad coordinates, element issue) → try self-heal
+      // Regular action error (bad coordinates) → self-heal targeting ONCE, no escalation
       emitNarration(
         socket,
         `[ERROR] Action failed: ${caughtActionErr.message}`,
       );
 
       if (actionNum < MAX_ACTIONS_PER_STEP - 1) {
-        // Guard: don't self-heal if step was already skipped/aborted
         if (checkAbort()) return { status: "incomplete" };
 
-        emitNarration(socket, "[INFO] Attempting self-heal...");
+        emitNarration(socket, "[INFO] Attempting self-heal (fix targeting)...");
 
         const healShot = await takeScreenshot();
         emitScreenshot(socket, step.id, healShot, await getCurrentUrl());
@@ -592,13 +675,11 @@ async function executeStepWithVisionLoop(
             step,
             ctx,
           );
-          // Guard: don't execute heal action if aborted while Gemini was thinking
           if (checkAbort()) return { status: "incomplete" };
           await executeComputerAction(healAction);
-          emitNarration(socket, "[OK] Recovered with new approach");
+          emitNarration(socket, "[OK] Recovered with corrected targeting");
           actionLog.push(`Self-healed: ${formatAction(healAction)}`);
           await new Promise((r) => setTimeout(r, 500));
-          break;
         } catch (healErr: any) {
           if (
             healErr instanceof GeminiRateLimitError ||
@@ -623,10 +704,30 @@ async function executeStepWithVisionLoop(
     } else {
       actionLog.push(actionDesc);
       await new Promise((r) => setTimeout(r, 500));
-      // Don't break — continue the loop so the model can take more actions
-      // toward the goal (e.g. click field → type → press Enter).
-      // The loop exits when: STEP_COMPLETE is returned, MAX_ACTIONS_PER_STEP
-      // is reached, or an abort/skip is detected at the top of the next iteration.
+
+      // ── MID-LOOP VERIFICATION — catch pass early, stop wasting actions ──
+      // Verify after action 2 and action 3.
+      // If passed after action 2 → done early.
+      // If not passed after action 3 → stop loop, fall through to final verify → fail.
+      if (actionNum >= 1) {
+        try {
+          const midShot = await takeScreenshot();
+          const midCheck = await verifyStep(midShot, step.expectedBehavior, ctx);
+          if (midCheck.passed) {
+            emitNarration(socket, `[OK] Step passed: ${midCheck.finding}`);
+            return { status: "passed", lastScreenshot: midShot };
+          }
+          console.log(`[Step ${step.id}] Mid-loop verify after action ${actionNum + 1}: not passed (${midCheck.finding})`);
+          if (actionNum >= 2) {
+            // 3 actions done, still not passed → stop trying
+            console.log(`[Step ${step.id}] 3 actions exhausted without passing — stopping`);
+            emitNarration(socket, `[INFO] Step not passing after ${actionNum + 1} actions — verifying final state`);
+            break;
+          }
+        } catch {
+          // verifyStep error — continue the loop
+        }
+      }
     }
   }
 

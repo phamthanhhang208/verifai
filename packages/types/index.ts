@@ -23,6 +23,7 @@ export interface TestStep {
   text: string;
   expectedBehavior: string;
   targetElement?: string;
+  dependsOn?: string[];              // step IDs this step depends on — skipped if any dependency failed
   status: StepStatus;
   incompleteReason?: IncompleteReason; // set when status === "incomplete"
   failureType?: FailureType;           // set when status === "failed"
@@ -121,6 +122,7 @@ export interface NarrationEvent {
 export interface SessionCompleteEvent {
   type: "session_complete";
   reportId: string;
+  bugs?: Bug[];
 }
 
 export interface SessionAbortedEvent {
@@ -133,6 +135,13 @@ export interface ErrorEvent {
   stepId?: string;
 }
 
+export interface VoiceEvent {
+  type: "voice";
+  audio: string;       // base64-encoded audio
+  mimeType: string;    // "audio/mp3" or "audio/wav" or "audio/pcm"
+  text: string;        // the narration text (for accessibility / fallback)
+}
+
 export type SocketEvent =
   | StepStartEvent
   | StepResultEvent
@@ -140,7 +149,8 @@ export type SocketEvent =
   | NarrationEvent
   | SessionCompleteEvent
   | SessionAbortedEvent
-  | ErrorEvent;
+  | ErrorEvent
+  | VoiceEvent;
 
 // ─── Jira ──────────────────────────────────────────────
 export interface JiraTicket {

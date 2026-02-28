@@ -1,6 +1,6 @@
 import type { JiraTicket, Bug, BugSeverity } from "@verifai/types";
 
-const JIRA_BASE_URL = process.env.JIRA_BASE_URL!;
+const JIRA_BASE_URL = (process.env.JIRA_BASE_URL || "").replace(/\/+$/, "");
 const JIRA_EMAIL = process.env.JIRA_EMAIL!;
 const JIRA_API_TOKEN = process.env.JIRA_API_TOKEN!;
 const JIRA_PROJECT_KEY = process.env.JIRA_PROJECT_KEY!;
@@ -22,32 +22,70 @@ export async function fetchTicket(ticketId: string): Promise<JiraTicket> {
   const data = await res.json();
   const fields = data.fields;
 
+  /**
+   * Recursively extract plain text from Jira's Atlassian Document Format (ADF).
+   * ADF is a tree of nodes like:
+   *   { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "hello" }] }] }
+   * We walk the tree depth-first and reconstruct readable text.
+   */
   function extractADFText(node: any): string {
     if (!node) return "";
     if (typeof node === "string") return node;
-    if (node.text) return node.text;
+
+    // Leaf text node — return its text directly
+    if (node.type === "text") return node.text || "";
+
+    // Recurse into children
     if (node.content && Array.isArray(node.content)) {
-      return node.content.map(extractADFText).join(" ");
+      const childTexts = node.content.map(extractADFText);
+
+      switch (node.type) {
+        case "paragraph":
+        case "heading":
+          return childTexts.join("") + "\n";
+        case "bulletList":
+        case "orderedList":
+          return childTexts.join("");
+        case "listItem":
+          return "• " + childTexts.join("").trim() + "\n";
+        case "doc":
+          return childTexts.join("\n");
+        default:
+          return childTexts.join(" ");
+      }
     }
+
+    // Fallback for nodes with just a text property (shouldn't happen in ADF v1)
+    if (node.text) return node.text;
+
     return "";
   }
 
+  const summary = fields.summary || "";
+  const description = extractADFText(fields.description).trim();
+  const acceptanceCriteria = extractADFText(
+    fields.customfield_10001 || fields.customfield_10200 || fields.customfield_10300
+  ).trim();
+
+  console.log(`[Jira] Ticket ${data.key}:`);
+  console.log(`[Jira]   Summary: ${summary}`);
+  console.log(`[Jira]   Description (${description.length} chars): ${description.slice(0, 200)}`);
+  console.log(`[Jira]   Acceptance Criteria (${acceptanceCriteria.length} chars): ${acceptanceCriteria.slice(0, 200)}`);
+
   return {
     key: data.key,
-    summary: fields.summary || "",
-    description: extractADFText(fields.description),
-    acceptanceCriteria: extractADFText(
-      fields.customfield_10001 || fields.customfield_10200 || fields.customfield_10300
-    ),
+    summary,
+    description,
+    acceptanceCriteria,
     url: `${JIRA_BASE_URL}/browse/${data.key}`,
   };
 }
 
 function severityToPriority(severity: BugSeverity): { id: string } {
   switch (severity) {
-    case "high":   return { id: "2" };
+    case "high": return { id: "2" };
     case "medium": return { id: "3" };
-    case "low":    return { id: "4" };
+    case "low": return { id: "4" };
   }
 }
 

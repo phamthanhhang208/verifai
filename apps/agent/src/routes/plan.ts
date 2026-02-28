@@ -49,6 +49,7 @@ export async function handleGeneratePlan(req: Request, res: Response): Promise<v
     }
 
     console.log(`[Plan] Generating test plan for: ${urlTrimmed}`);
+    console.log(`[Plan] Spec text (${specText.length} chars):\n${specText.slice(0, 500)}`);
     const steps = await generateTestPlan(specText, urlTrimmed, geminiApiKey || undefined);
 
     const plan: TestPlan = {
