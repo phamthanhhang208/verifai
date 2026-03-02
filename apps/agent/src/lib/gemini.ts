@@ -271,7 +271,13 @@ Viewport is 1280×720. Use the computer_use tool.`,
       ],
       config: {
         tools: [
-          { computerUse: { environment: Environment.ENVIRONMENT_BROWSER } },
+          {
+            computerUse: {
+              //environment: Environment.ENVIRONMENT_BROWSER
+              // @ts-expect-error: Weird querk of GoogleGenAI
+              environment: "ENVIRONMENT_BROWSER",
+            }
+          },
         ],
       },
     });
@@ -667,7 +673,7 @@ TICKET TEMPLATE — the ticket typically follows this structure:
 YOUR TASK:
 1. Parse the acceptance criteria list from the ticket
 2. Create test steps that cover EVERY SINGLE acceptance criterion
-3. Each criterion → one or more atomic browser steps
+3. Combine sequential interactions into a single logical step where possible
 4. Group related steps with proper dependencies
 
 Return ONLY a JSON array (no markdown fences). Each step object:
@@ -685,10 +691,14 @@ DEPENDENCY RULES (dependsOn field):
 
 CRITICAL RULES:
 - First step must navigate to: ${targetUrl}
+- Maximum 10 steps per test plan
+- Each step should cover a logical action + verification together, not individual keystrokes
+- One user account per test plan — do not mix multiple users
+- Combine sequential form inputs into a single step
+- Focus only on the Acceptance Criteria of the ticket provided, not every possible edge case
+- Each step should take no more than 30 seconds to execute
 - If the ticket has a Test Account, use THOSE EXACT credentials — do NOT substitute different ones
-- EVERY acceptance criterion MUST be covered by at least one test step
 - Use the EXACT field names, button labels, and values from the ticket
-- Each step = one atomic browser action (click, type, navigate, scroll, or verify)
 - Do not include any explanations outside the JSON array`,
     });
 

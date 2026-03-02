@@ -1,4 +1,5 @@
-import { CheckCircle2 } from "lucide-react";
+import { CheckCircle2, Activity } from "lucide-react";
+import Link from "next/link";
 import { cn } from "@/lib/utils";
 
 interface HeaderProps {
@@ -45,8 +46,16 @@ export default function Header({ currentScreen }: HeaderProps) {
           ))}
         </div>
 
-        {/* Right balance spacer */}
-        <div className="w-20" />
+        {/* Right Action */}
+        <div className="flex items-center">
+          <Link
+            href="/runs"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-400 hover:text-gray-200 bg-gray-800/50 hover:bg-gray-800 rounded-lg border border-gray-700/50 transition-colors"
+          >
+            <Activity className="w-3.5 h-3.5" />
+            History
+          </Link>
+        </div>
       </div>
     </header>
   );

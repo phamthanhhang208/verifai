@@ -73,12 +73,12 @@ function generateReportPDF(report: BugReport): jsPDF {
   // Report status badge
   const statusColor =
     report.reportStatus === "passed" ? colors.passed
-    : report.reportStatus === "failed" ? colors.failed
-    : colors.incomplete;
+      : report.reportStatus === "failed" ? colors.failed
+        : colors.incomplete;
   const statusLabel =
     report.reportStatus === "passed" ? "PASSED"
-    : report.reportStatus === "failed" ? "FAILED"
-    : "INCOMPLETE";
+      : report.reportStatus === "failed" ? "FAILED"
+        : "INCOMPLETE";
 
   doc.setFillColor(...statusColor);
   const badgeWidth = doc.getTextWidth(statusLabel) + 8;
@@ -211,15 +211,15 @@ function generateReportPDF(report: BugReport): jsPDF {
     // Status badge
     const sColor =
       step.status === "passed" ? colors.passed
-      : step.status === "failed" ? colors.failed
-      : step.status === "incomplete" ? colors.incomplete
-      : colors.lightText;
+        : step.status === "failed" ? colors.failed
+          : step.status === "incomplete" ? colors.incomplete
+            : colors.lightText;
 
     const sLabel =
       step.status === "passed" ? "PASS"
-      : step.status === "failed" ? "FAIL"
-      : step.status === "incomplete" ? "SKIP"
-      : step.status.toUpperCase();
+        : step.status === "failed" ? "FAIL"
+          : step.status === "incomplete" ? "SKIP"
+            : step.status.toUpperCase();
 
     doc.setFillColor(...sColor);
     const sBadgeW = 12;
@@ -264,8 +264,8 @@ function generateReportPDF(report: BugReport): jsPDF {
       // Severity badge
       const sevColor =
         bug.severity === "high" ? colors.failed
-        : bug.severity === "medium" ? colors.incomplete
-        : colors.lightText;
+          : bug.severity === "medium" ? colors.incomplete
+            : colors.lightText;
       doc.setFillColor(...sevColor);
       const sevLabel = bug.severity.toUpperCase();
       const sevW = doc.getTextWidth(sevLabel) + 6;
@@ -337,8 +337,8 @@ function generateReportPDF(report: BugReport): jsPDF {
       // Reason chip
       const reason = step.incompleteReason === "rate_limit" ? "Rate Limited"
         : step.incompleteReason === "timeout" ? "Timeout"
-        : step.incompleteReason === "crash" ? "Error"
-        : "Skipped";
+          : step.incompleteReason === "crash" ? "Error"
+            : "Skipped";
       doc.setFillColor(...colors.incomplete);
       const rW = doc.getTextWidth(reason) + 6;
       doc.roundedRect(pageWidth - margin - rW - 4, y + 2, rW, 7, 1, 1, "F");

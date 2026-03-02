@@ -177,7 +177,7 @@ export default function Home() {
         // Replace local bugs with server-enriched bugs (includes screenshotUrl, jiraTicketKey, jiraTicketUrl)
         console.log("[session_complete] reportId:", event.reportId, "bugs:", event.bugs);
         if (event.bugs && event.bugs.length > 0) {
-          console.log("[session_complete] Replacing local bugs with enriched:", event.bugs.map(b => ({ id: b.id, jiraTicketKey: b.jiraTicketKey, jiraTicketUrl: b.jiraTicketUrl, screenshotUrl: b.screenshotUrl })));
+          console.log("[session_complete] Replacing local bugs with enriched:", event.bugs.map((b: Bug) => ({ id: b.id, jiraTicketKey: b.jiraTicketKey, jiraTicketUrl: b.jiraTicketUrl, screenshotUrl: b.screenshotUrl })));
           setCollectedBugs(event.bugs);
         }
         break;
@@ -226,7 +226,13 @@ export default function Home() {
     socket.onEvent(handleSocketEvent);
   };
 
-  const handleConfigure = async (source: string, targetUrl: string, geminiKey: string) => {
+  const handleConfigure = async (input: {
+    source: "jira" | "confluence" | "manual";
+    specText: string;
+    targetUrl: string;
+    sourceLabel: string;
+    geminiApiKey: string;
+  }) => {
     setIsLoading(true);
     setConfigureError(null);
     try {
@@ -234,15 +240,22 @@ export default function Home() {
       const res = await fetch(`${agentUrl}/api/plan`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ source, targetUrl, geminiApiKey: geminiKey || undefined }),
+        body: JSON.stringify({
+          source: input.specText,
+          targetUrl: input.targetUrl,
+          geminiApiKey: input.geminiApiKey || undefined,
+          sourceType: input.source,
+        }),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({ error: `Agent error: ${res.status}` }));
         throw new Error(err.error || `Agent error: ${res.status}`);
       }
       const plan: TestPlan = await res.json();
+      // Override sourceTicket with the user-friendly label
+      plan.sourceTicket = input.sourceLabel;
       setTestPlan(plan);
-      setCurrentUrl(targetUrl);
+      setCurrentUrl(input.targetUrl);
       setCurrentScreen(2);
     } catch (err: any) {
       setConfigureError(err.message || "Failed to generate test plan");
@@ -526,6 +539,30 @@ export default function Home() {
     }
   }
 
+  const handleDownloadPDF = async () => {
+    if (!report) return;
+
+    try {
+      const res = await fetch("/api/report/pdf", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(report),
+      });
+
+      if (!res.ok) throw new Error("PDF generation failed");
+
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `verifai-report-${report.id}.pdf`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error("[PDF] Download failed:", err);
+    }
+  };
+
   const handleNewRun = () => {
     socket.disconnect();
     setCurrentScreen(1);
@@ -588,6 +625,7 @@ export default function Home() {
           report={report}
           onNewRun={handleNewRun}
           onRetryIncomplete={handleRetryIncomplete}
+          onDownloadPDF={handleDownloadPDF}
         />
       )}
 

@@ -171,7 +171,7 @@ io.on("connection", (socket) => {
 const PORT = parseInt(process.env.PORT || "3001");
 server.listen(PORT, () => {
   console.log(`[Verifai Agent] Running on port ${PORT}`);
-  console.log(`[Models] Vision:  gemini-3-flash (Computer Use, 5 RPM)`);
-  console.log(`[Models] Flash:   gemini-2.5-flash (fallback reasoning, 5 RPM)`);
-  console.log(`[Models] Lite:    gemini-2.5-flash-lite (verify/narrate, 10 RPM)`);
+  console.log(`[Models] Vision:  gemini-3-flash (Computer Use — interaction + DOM decisions)`);
+  console.log(`[Models] Flash:   gemini-2.5-flash (Fallback reasoning + error recovery)`);
+  console.log(`[Models] Lite:    gemini-2.5-flash-lite (Summarization, verification, parsing)`);
 });

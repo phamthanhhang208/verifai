@@ -11,10 +11,11 @@ const JIRA_CONFIGURED = !!(
 );
 
 export async function handleGeneratePlan(req: Request, res: Response): Promise<void> {
-  const { source, targetUrl, geminiApiKey } = req.body as {
+  const { source, targetUrl, geminiApiKey, sourceType } = req.body as {
     source?: string;
     targetUrl?: string;
     geminiApiKey?: string;
+    sourceType?: "jira" | "confluence" | "manual";
   };
 
   if (!source?.trim() || !targetUrl?.trim()) {
@@ -48,7 +49,14 @@ export async function handleGeneratePlan(req: Request, res: Response): Promise<v
       }
     }
 
-    console.log(`[Plan] Generating test plan for: ${urlTrimmed}`);
+    // Prepend source-aware context hint for Gemini
+    if (sourceType === "confluence") {
+      specText = `[This is Confluence documentation describing the application's user flows, features, and acceptance criteria. Identify the PRIMARY user flow and generate test steps that follow it end-to-end. Look for: acceptance criteria, user stories, step-by-step instructions, feature descriptions, and expected behaviors.]\n\n${specText}`;
+    } else if (sourceType === "manual") {
+      specText = `[This is a manual test specification provided by a QA engineer. Generate test steps based on the described scenario.]\n\n${specText}`;
+    }
+
+    console.log(`[Plan] Generating test plan for: ${urlTrimmed} (source: ${sourceType || "auto"})`);
     console.log(`[Plan] Spec text (${specText.length} chars):\n${specText.slice(0, 500)}`);
     const steps = await generateTestPlan(specText, urlTrimmed, geminiApiKey || undefined);
 

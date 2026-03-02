@@ -192,3 +192,30 @@ export interface ModelConfig {
   lite: string;
   tts?: string;
 }
+
+// ─── Confluence ─────────────────────────────────────────
+export interface ConfluencePage {
+  id: string;
+  title: string;
+  spaceKey: string;
+  body: string;           // Extracted plain text content
+  url: string;
+  lastUpdated: string;
+  childPages?: ConfluencePage[];  // Optional child pages for hierarchical specs
+}
+
+export type SpecSource = "jira" | "confluence" | "manual";
+
+export interface SpecInput {
+  source: SpecSource;
+  // Jira
+  jiraTicketId?: string;
+  // Confluence
+  confluencePageUrl?: string;
+  confluencePageId?: string;
+  includeChildPages?: boolean;
+  // Manual
+  manualText?: string;
+  // Common
+  targetUrl: string;
+}

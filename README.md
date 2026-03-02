@@ -29,8 +29,8 @@ Verifai is an autonomous QA agent that reads Jira tickets, navigates live web ap
 └──────────────┘                    │        │         │
                                     │  ┌─────▼──────┐  │
                                     │  │ Gemini AI   │  │
-                                    │  │ 3 Flash     │──┼──► Computer Use (5 RPM)
-                                    │  │ 2.5 Lite    │──┼──► Verify/Narrate (10 RPM)
+                                    │  │ 3 Flash     │──┼──► Computer Use (Decisions)
+                                    │  │ 2.5 Lite    │──┼──► Verify/Narrate (Parsing)
                                     │  └────────────┘  │
                                     │                  │
                                     │  ┌────────────┐  │
@@ -42,13 +42,14 @@ Verifai is an autonomous QA agent that reads Jira tickets, navigates live web ap
 
 ## AI Models
 
-Multi-model architecture optimized for Gemini free tier rate limits:
+Multi-model architecture optimized for different task requirements:
 
-| Task | Model | RPM | Protocol |
+| Task | Model | Why | Protocol |
 |------|-------|-----|----------|
-| Browser action decisions | Gemini 3 Flash | 5 | Native Computer Use tool |
-| Verification & narration | Gemini 2.5 Flash Lite | 10 | Vision + JSON prompt |
-| Spec parsing | Gemini 2.5 Flash Lite | 10 | Text → JSON |
+| Browser action decisions | Gemini 3 Flash | Best model for understanding screenshots and taking granular actions | Native Computer Use tool |
+| Verification & narration | Gemini 2.5 Flash Lite | Fast and cheap for simple DOM parsing and status updates | Vision + JSON prompt |
+| Spec parsing | Gemini 2.5 Flash Lite | Excellent for extracting steps from structured text | Text → JSON |
+| Fallback Reasoning | Gemini 2.5 Flash | Provides stronger reasoning when simple actions fail | Vision + Text |
 
 ## Tri-State Reporting
 

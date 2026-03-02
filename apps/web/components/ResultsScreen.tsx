@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Download, Plus, Monitor, AlertTriangle, RefreshCw, Clock, ExternalLink } from "lucide-react";
+import { Download, FileDown, Plus, Monitor, AlertTriangle, RefreshCw, Clock, ExternalLink, Activity } from "lucide-react";
+import Link from "next/link";
 import { cn } from "@/lib/utils";
 import type { BugReport, BugSeverity, IncompleteReason } from "@verifai/types";
 import { Badge } from "@/components/ui/badge";
@@ -16,6 +17,7 @@ interface ResultsScreenProps {
   report: BugReport;
   onNewRun: () => void;
   onRetryIncomplete: () => void;
+  onDownloadPDF?: () => void;
 }
 
 const RETRY_DELAY_MS = 10 * 60 * 1000; // 10 minutes
@@ -38,13 +40,13 @@ function SeverityBadge({ severity }: { severity: BugSeverity }) {
 function incompleteReasonLabel(reason: IncompleteReason | undefined): string {
   switch (reason) {
     case "rate_limit": return "Rate Limited";
-    case "timeout":    return "Timeout";
-    case "crash":      return "Agent Error";
-    default:           return "Skipped";
+    case "timeout": return "Timeout";
+    case "crash": return "Agent Error";
+    default: return "Skipped";
   }
 }
 
-export default function ResultsScreen({ report, onNewRun, onRetryIncomplete }: ResultsScreenProps) {
+export default function ResultsScreen({ report, onNewRun, onRetryIncomplete, onDownloadPDF }: ResultsScreenProps) {
   const [retryReady, setRetryReady] = useState(false);
 
   const { reportStatus, incompleteSteps, failedSteps, passedSteps, passRate } = report;
@@ -80,8 +82,8 @@ export default function ResultsScreen({ report, onNewRun, onRetryIncomplete }: R
   };
 
   const statusBadge = {
-    passed:     { label: "PASSED",     className: "bg-emerald-500/20 text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/20" },
-    failed:     { label: "FAILED RUN", className: "bg-rose-500/20 text-rose-400 border-rose-500/30 hover:bg-rose-500/20" },
+    passed: { label: "PASSED", className: "bg-emerald-500/20 text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/20" },
+    failed: { label: "FAILED RUN", className: "bg-rose-500/20 text-rose-400 border-rose-500/30 hover:bg-rose-500/20" },
     incomplete: { label: "INCOMPLETE", className: "bg-amber-500/20 text-amber-400 border-amber-500/30 hover:bg-amber-500/20" },
   }[reportStatus];
 
@@ -104,6 +106,13 @@ export default function ResultsScreen({ report, onNewRun, onRetryIncomplete }: R
           </div>
 
           <div className="flex items-center gap-3">
+            <Link
+              href="/runs"
+              className="flex items-center gap-2 px-4 py-2 text-sm text-gray-400 hover:text-gray-200 bg-gray-800/50 hover:bg-gray-800 rounded-lg border border-gray-700/50 transition-colors"
+            >
+              <Activity className="w-4 h-4" />
+              View All Runs
+            </Link>
             <button
               onClick={onNewRun}
               className="flex items-center gap-2 px-4 py-2 rounded-lg border border-gray-700 text-sm text-gray-300 hover:border-gray-600 hover:text-white transition-colors"
@@ -111,22 +120,15 @@ export default function ResultsScreen({ report, onNewRun, onRetryIncomplete }: R
               <Plus className="w-4 h-4" />
               New Test Run
             </button>
-            <TooltipProvider>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button
-                    disabled
-                    className="flex items-center gap-2 px-4 py-2 rounded-lg border border-gray-700 text-sm text-gray-600 cursor-not-allowed opacity-50"
-                  >
-                    <Download className="w-4 h-4" />
-                    Download PDF Report
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent>
-                  <p>Coming soon</p>
-                </TooltipContent>
-              </Tooltip>
-            </TooltipProvider>
+            {onDownloadPDF && (
+              <button
+                onClick={onDownloadPDF}
+                className="flex items-center gap-2 px-4 py-2 bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-400 text-sm font-medium rounded-lg border border-indigo-500/30 transition-colors"
+              >
+                <FileDown className="w-4 h-4" />
+                Download PDF
+              </button>
+            )}
           </div>
         </div>
 
