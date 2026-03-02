@@ -15,30 +15,18 @@ Verifai is an autonomous QA agent that reads Jira tickets, navigates live web ap
    - Verifies the result with Gemini 2.5 Flash Lite
 4. **Reports** bugs with screenshots, expected vs actual behavior, and auto-created Jira tickets
 
+## Key Features
+
+- **Autonomous Web Testing**: AI vision navigates the DOM, clicks, types, and verifies outcomes.
+- **Human-in-the-Loop (HITL)**: Agent pauses and asks for human confirmation if its action or verification confidence is low.
+- **Test History Dashboard**: Explore past runs, review metrics, and find aggregated bug reports.
+- **Presentation Demo Mode**: Record and replay AI sessions perfectly to avoid live latency.
+
 ## Architecture
 
-```
-┌─────────────┐     WebSocket      ┌──────────────────┐
-│  Next.js     │◄──────────────────►│  Agent Server    │
-│  (Vercel)    │   Socket.io        │  (Cloud Run)     │
-│              │                    │                  │
-│  3 Screens:  │                    │  ┌────────────┐  │
-│  Configure   │                    │  │ Playwright  │  │
-│  Execute     │                    │  │ (Chromium)  │  │
-│  Results     │                    │  └─────┬──────┘  │
-└──────────────┘                    │        │         │
-                                    │  ┌─────▼──────┐  │
-                                    │  │ Gemini AI   │  │
-                                    │  │ 3 Flash     │──┼──► Computer Use (Decisions)
-                                    │  │ 2.5 Lite    │──┼──► Verify/Narrate (Parsing)
-                                    │  └────────────┘  │
-                                    │                  │
-                                    │  ┌────────────┐  │
-                                    │  │ GCS / Jira  │  │
-                                    │  │ Firestore   │  │
-                                    │  └────────────┘  │
-                                    └──────────────────┘
-```
+Verifai is built on a real-time, WebSocket-first architecture connecting a Next.js frontend to a Node.js Agent running Playwright and Gemini.
+
+For a detailed breakdown of the system components, data flow, and interactive diagrams, see the **[Architecture Documentation](./ARCHITECTURE.md)**.
 
 ## AI Models
 
@@ -146,6 +134,10 @@ cd apps/web && vercel --prod
 | `CORS_ORIGIN` | Agent | Allowed CORS origin |
 | `PLAYWRIGHT_NAVIGATION_TIMEOUT_MS` | Agent | Navigation timeout (default: 15000) |
 | `PORT` | Agent | Server port (default: 3001) |
+| `HITL_ENABLED` | Agent | Enable Human-in-the-Loop interventions (default: true) |
+| `HITL_ACTION_THRESHOLD` | Agent | Minimum confidence to autonomously run an action (default: 0.7) |
+| `HITL_VERIFY_THRESHOLD` | Agent | Minimum confidence to autonomously report a verification (default: 0.6) |
+| `HITL_MAX_WAIT_MS` | Agent | Max time to wait for a human decision before auto-resuming (default: 120000) |
 
 ## Hackathon
 

@@ -142,6 +142,81 @@ export interface VoiceEvent {
   text: string;        // the narration text (for accessibility / fallback)
 }
 
+// ─── Human-in-the-Loop ─────────────────────────────────
+
+export type HITLPauseReason =
+  | "low_confidence_action"     // AI unsure which element to interact with
+  | "unexpected_page_state"     // Page looks different than expected
+  | "verification_ambiguous"    // Can't tell if step passed or failed
+  | "destructive_action"        // Action might have irreversible consequences
+  | "authentication_required"   // Login/auth wall detected
+  | "custom";                   // Manual pause triggered by agent logic
+
+export type HITLDecision =
+  | "proceed"         // Continue with the AI's suggested action
+  | "skip"            // Skip this step entirely (mark incomplete)
+  | "override"        // Use human-provided alternative action
+  | "abort"           // Stop the entire session
+  | "retry";          // Re-analyze the current screenshot
+
+export interface HITLPauseEvent {
+  type: "hitl_pause";
+  pauseId: string;              // Unique ID for this pause instance
+  stepId: string;
+  stepText: string;
+  reason: HITLPauseReason;
+  question: string;             // AI's question to the human
+  screenshotBase64: string;     // Current browser state
+  suggestedAction?: {           // What the AI would do if human says "proceed"
+    type: string;
+    coordinate?: [number, number];
+    text?: string;
+    reasoning?: string;
+  };
+  confidence: number;           // 0.0-1.0
+  options: HITLOption[];         // Decision buttons to show
+  timestamp: string;
+}
+
+export interface HITLOption {
+  decision: HITLDecision;
+  label: string;                // Button text
+  description?: string;         // Tooltip/subtitle
+  variant: "primary" | "secondary" | "danger" | "warning";
+}
+
+export interface HITLDecisionEvent {
+  type: "hitl_decision";
+  pauseId: string;
+  decision: HITLDecision;
+  overrideAction?: {            // Only when decision === "override"
+    type: string;
+    coordinate?: [number, number];
+    text?: string;
+    reasoning?: string;
+  };
+  humanNote?: string;           // Optional note from the operator
+}
+
+export interface HITLResumeEvent {
+  type: "hitl_resume";
+  pauseId: string;
+  decision: HITLDecision;
+}
+
+export interface HITLLogEntry {
+  pauseId: string;
+  stepId: string;
+  reason: HITLPauseReason;
+  question: string;
+  confidence: number;
+  decision: HITLDecision;
+  humanNote?: string;
+  pausedAt: string;
+  resumedAt: string;
+  durationMs: number;           // How long the human took to decide
+}
+
 export type SocketEvent =
   | StepStartEvent
   | StepResultEvent
@@ -150,7 +225,9 @@ export type SocketEvent =
   | SessionCompleteEvent
   | SessionAbortedEvent
   | ErrorEvent
-  | VoiceEvent;
+  | VoiceEvent
+  | HITLPauseEvent
+  | HITLResumeEvent;
 
 // ─── Jira ──────────────────────────────────────────────
 export interface JiraTicket {
@@ -173,6 +250,7 @@ export interface GeminiVerification {
   passed: boolean;
   finding: string;
   severity?: BugSeverity;
+  confidence?: number;
 }
 
 // ─── Computer Use Actions (Gemini 3 Flash native tool) ──
@@ -184,6 +262,7 @@ export interface ComputerUseAction {
   url?: string;                      // For navigate actions
   direction?: "up" | "down" | "left" | "right";
   reasoning?: string;
+  confidence?: number;               // 0.0-1.0 self-assessed confidence
 }
 
 // ─── Model Configuration ────────────────────────────────

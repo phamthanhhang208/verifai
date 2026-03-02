@@ -16,9 +16,15 @@ import {
   RefreshCw,
   SkipForward,
   AlertTriangle,
+  ArrowRight,
+  Expand,
+  Hand,
+  ShieldAlert,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import type { TestPlan, StepStatus } from "@verifai/types";
+import type { TestPlan, StepStatus, HITLPauseEvent, HITLLogEntry } from "@verifai/types";
+import { socket } from "@/lib/socket";
+import HITLModal from "./HITLModal";
 
 export type TranscriptLine = {
   text: string;
@@ -47,6 +53,8 @@ interface ExecuteScreenProps {
   isLoadingReport: boolean;
   voiceEnabled: boolean;
   onToggleVoice: () => void;
+  hitlPause: HITLPauseEvent | null;
+  hitlHistory: HITLLogEntry[];
 }
 
 function StatusIcon({ status }: { status: StepStatus }) {
@@ -104,11 +112,14 @@ export default function ExecuteScreen({
   isLoadingReport,
   voiceEnabled,
   onToggleVoice,
+  hitlPause,
+  hitlHistory,
 }: ExecuteScreenProps) {
   const transcriptEndRef = useRef<HTMLDivElement>(null);
   const [stepTexts, setStepTexts] = useState<Record<string, string>>(
     () => testPlan.steps.reduce((acc, s) => ({ ...acc, [s.id]: s.text }), {} as Record<string, string>)
   );
+  const [expandedImage, setExpandedImage] = useState<string | null>(null);
 
   const [sidebarWidth, setSidebarWidth] = useState(320);
   const [transcriptHeight, setTranscriptHeight] = useState(192);
@@ -181,7 +192,11 @@ export default function ExecuteScreen({
                   isFailed && "bg-rose-500/5 border-rose-500/30"
                 )}
               >
-                <StatusIcon status={step.status} />
+                {hitlPause?.stepId === step.id ? (
+                  <ShieldAlert className="w-4 h-4 text-orange-400 shrink-0 mt-0.5 animate-pulse" />
+                ) : (
+                  <StatusIcon status={step.status} />
+                )}
                 <div className="flex-1 min-w-0">
                   {isEditable ? (
                     <textarea
@@ -394,26 +409,55 @@ export default function ExecuteScreen({
             <button
               onClick={onToggleVoice}
               className={`absolute bottom-4 right-4 w-10 h-10 rounded-full flex items-center justify-center transition-all ${voiceEnabled
-                  ? "bg-indigo-500/20 border border-indigo-500/40 text-indigo-400"
-                  : "bg-[#1A1C20] border border-gray-700 text-gray-500 hover:text-gray-400"
+                ? "bg-indigo-500/20 border border-indigo-500/40 text-indigo-400"
+                : "bg-[#1A1C20] border border-gray-700 text-gray-500 hover:text-gray-400"
                 }`}
               title={voiceEnabled ? "Disable voice narration" : "Enable voice narration"}
             >
-              {voiceEnabled ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
+              {voiceEnabled ? <Volume2 className="w-5 h-5 text-indigo-400" /> : <VolumeX className="w-5 h-5 text-gray-400" />}
             </button>
           </div>
         </div>
 
         {/* TRANSCRIPT RESIZE HANDLE */}
-        <div
-          onMouseDown={startTranscriptResize}
-          className="h-1 shrink-0 bg-gray-800 hover:bg-indigo-500/50 cursor-row-resize transition-colors group relative"
-          title="Drag to resize"
-        >
-          <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 flex items-center justify-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-            {[0, 1, 2].map((i) => (
-              <div key={i} className="w-0.5 h-0.5 rounded-full bg-indigo-400" />
-            ))}
+        <div className="relative">
+          <div
+            onMouseDown={startTranscriptResize}
+            className="h-1 shrink-0 bg-gray-800 hover:bg-indigo-500/50 cursor-row-resize transition-colors group relative z-10"
+            title="Drag to resize"
+          >
+            <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 flex items-center justify-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+              {[0, 1, 2].map((i) => (
+                <div key={i} className="w-0.5 h-0.5 rounded-full bg-indigo-400" />
+              ))}
+            </div>
+          </div>
+
+          <div className="absolute top-1 left-0 right-0 h-10 px-4 flex items-center justify-between text-sm text-gray-400 pointer-events-none z-0">
+            {hitlPause ? (
+              <span className="flex items-center gap-2 text-orange-400">
+                <ShieldAlert className="w-4 h-4 animate-pulse" />
+                Awaiting Human Decision...
+              </span>
+            ) : isRunning ? (
+              <span className="flex items-center gap-2">
+                <span className="relative flex h-2 w-2">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-indigo-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-indigo-500"></span>
+                </span>
+                Agent active and listening
+              </span>
+            ) : isComplete ? (
+              <span>Session complete</span>
+            ) : (
+              <span>Ready to start</span>
+            )}
+
+            {hitlHistory.length > 0 && !hitlPause && (
+              <span className="text-gray-500">
+                {hitlHistory.length} HITL event{hitlHistory.length === 1 ? '' : 's'} recorded
+              </span>
+            )}
           </div>
         </div>
 
@@ -445,6 +489,40 @@ export default function ExecuteScreen({
           </div>
         </div>
       </div>
+      {/* HITL Modal Overlay */}
+      {hitlPause && (
+        <HITLModal
+          pauseEvent={hitlPause}
+          onDecision={(decision) => {
+            socket.emit("hitl_decision", decision);
+          }}
+        />
+      )}
+
+      {/* Expanded Image Modal */}
+      {expandedImage && (
+        <div
+          className="fixed inset-0 z-50 flex flex-col bg-black/90 backdrop-blur-sm animate-in fade-in duration-200"
+          onClick={() => setExpandedImage(null)}
+        >
+          <div className="flex items-center justify-between p-4 flex-none">
+            <span className="text-gray-400 font-medium">Browser Screenshot</span>
+            <button
+              onClick={() => setExpandedImage(null)}
+              className="px-4 py-2 bg-white/10 hover:bg-white/20 text-white rounded-lg transition-colors font-medium"
+            >
+              Close
+            </button>
+          </div>
+          <div className="flex-1 flex items-center justify-center p-4 min-h-0">
+            <img
+              src={expandedImage}
+              alt="Expanded view"
+              className="max-w-full max-h-full object-contain cursor-zoom-out"
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }

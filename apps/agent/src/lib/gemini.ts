@@ -25,6 +25,7 @@ const VerificationSchema = z.object({
   passed: z.boolean(),
   finding: z.string().default(""),
   severity: z.enum(["high", "medium", "low"]).optional(),
+  confidence: z.number().min(0).max(1).optional(),
 });
 
 function cleanJSON(text: string): string {
@@ -89,7 +90,15 @@ export async function decideAction(
       - Click coordinates must target the CENTER of the element you want to interact with
       - For text input fields: click the field coordinate first, then use type with the text
       - If the expected outcome is ALREADY visible on screen, respond with text "STEP_COMPLETE"
-      - Be precise with pixel coordinates — cross-reference the screenshot with the accessibility tree coordinates`,
+      - Be precise with pixel coordinates — cross-reference the screenshot with the accessibility tree coordinates
+
+      After deciding the action, also assess your CONFIDENCE (0.0 to 1.0):
+      - 1.0 = Absolutely certain this is the right element and action
+      - 0.7+ = Reasonably confident, standard UI interaction
+      - 0.4-0.7 = Uncertain — multiple possible targets or ambiguous UI
+      - Below 0.4 = Very unsure — unfamiliar page state, no clear match
+
+      If you respond with text (not a tool call), include a JSON field "confidence" in your response.`,
             },
             {
               inlineData: {
@@ -475,6 +484,7 @@ function parseComputerUseResponse(response: any): ComputerUseAction {
         url: normalized.url ?? args.url,
         direction: normalized.direction ?? args.direction,
         reasoning: args.reasoning || `Computer Use: ${part.functionCall.name}`,
+        confidence: args.confidence ?? 0.8,
       } as ComputerUseAction;
     }
 
@@ -494,6 +504,7 @@ function parseComputerUseResponse(response: any): ComputerUseAction {
           url: p.url,
           direction: p.direction,
           reasoning: p.reasoning || "Parsed from text",
+          confidence: p.confidence ?? 0.8,
         };
       } catch {
         console.warn("[Gemini] Non-parseable text:", text.slice(0, 150));
@@ -540,7 +551,12 @@ Password fields showing masked characters (dots/asterisks) is NORMAL — not a b
 
 Be STRICT: if the expected behavior says "correct images" and the images are wrong, duplicated, or don't match their product names, that is a FAILURE.
 
-Return ONLY JSON, no markdown: {"passed":true/false,"finding":"what you see — be specific about what's wrong","severity":"high"|"medium"|"low"}
+Also rate your confidence in this verification (0.0 to 1.0):
+- 1.0 = Crystal clear, unmistakable result
+- 0.7+ = Fairly certain based on what's visible
+- Below 0.7 = Hard to tell, ambiguous visual state
+
+Return ONLY JSON, no markdown: {"passed":true/false,"finding":"what you see — be specific about what's wrong","severity":"high"|"medium"|"low","confidence":0.9}
 (severity only needed when passed=false)`,
             },
           ],

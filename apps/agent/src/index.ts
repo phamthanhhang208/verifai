@@ -3,7 +3,8 @@ import express from "express";
 import { createServer } from "http";
 import { Server as SocketIOServer } from "socket.io";
 import cors from "cors";
-import type { TestPlan } from "@verifai/types";
+import { registerDecision, cleanupEmitter } from "./lib/hitl.js";
+import type { HITLDecisionEvent, SpecInput, TestPlan } from "@verifai/types";
 import { runSession } from "./routes/session.js";
 import { handleGeneratePlan } from "./routes/plan.js";
 
@@ -33,8 +34,11 @@ app.post("/api/plan", handleGeneratePlan);
 // In-memory session store — TODO: Replace with Redis in production
 const sessions = new Map<string, { status: string; startedAt: string }>();
 
+// In-memory store for active plan generation requests, allowing cancellation
+const activePlanControllers = new Map<string, AbortController>();
+
 io.on("connection", (socket) => {
-  console.log(`[Socket] Client connected: ${socket.id}`);
+  console.log(`[Socket] Client connected: ${socket.id} `);
 
   // Per-connection signals — shared between event handlers and the running session
   const skipSignal = new Set<string>();
@@ -42,7 +46,7 @@ io.on("connection", (socket) => {
   let abortCurrentSession: (() => void) | null = null;
 
   socket.on("session:skip_step", (data: { stepId: string }) => {
-    console.log(`[Session] Skip requested for step: ${data.stepId}`);
+    console.log(`[Session] Skip requested for step: ${data.stepId} `);
     skipSignal.add(data.stepId);
   });
 
@@ -81,7 +85,7 @@ io.on("connection", (socket) => {
   socket.on(
     "session:start",
     async (data: { testPlan: TestPlan; targetUrl: string; geminiApiKey?: string }) => {
-      const sessionId = `session-${Date.now()}`;
+      const sessionId = `session - ${Date.now()} `;
       sessions.set(sessionId, {
         status: "running",
         startedAt: new Date().toISOString(),
@@ -93,9 +97,9 @@ io.on("connection", (socket) => {
       abortCurrentSession = () => { abort.aborted = true; };
 
       const keyInfo = data.geminiApiKey
-        ? `user key (${data.geminiApiKey.slice(0, 4)}...${data.geminiApiKey.slice(-4)})`
+        ? `user key(${data.geminiApiKey.slice(0, 4)}...${data.geminiApiKey.slice(-4)})`
         : "server env key";
-      console.log(`[Session] Starting ${sessionId} for ${data.targetUrl} — API key: ${keyInfo}`);
+      console.log(`[Session] Starting ${sessionId} for ${data.targetUrl} — API key: ${keyInfo} `);
 
       try {
         await runSession(socket, sessionId, data.testPlan, data.targetUrl, skipSignal, data.geminiApiKey, pauseSignal, abort);
@@ -105,7 +109,7 @@ io.on("connection", (socket) => {
         });
       } catch (error: unknown) {
         const msg = error instanceof Error ? error.message : String(error);
-        console.error(`[Session] Error in ${sessionId}:`, error);
+        console.error(`[Session] Error in ${sessionId}: `, error);
         socket.emit("event", {
           type: "error",
           message: msg || "Session failed unexpectedly",
@@ -124,7 +128,7 @@ io.on("connection", (socket) => {
   socket.on(
     "session:retry_skipped",
     async (data: { testPlan: TestPlan; targetUrl: string; skippedStepIds: string[]; geminiApiKey?: string }) => {
-      const sessionId = `retry-${Date.now()}`;
+      const sessionId = `retry - ${Date.now()} `;
       sessions.set(sessionId, {
         status: "running",
         startedAt: new Date().toISOString(),
@@ -151,7 +155,7 @@ io.on("connection", (socket) => {
         });
       } catch (error: unknown) {
         const msg = error instanceof Error ? error.message : String(error);
-        console.error(`[Session] Retry error in ${sessionId}:`, error);
+        console.error(`[Session] Retry error in ${sessionId}: `, error);
         socket.emit("event", { type: "error", message: msg });
         sessions.set(sessionId, {
           status: "error",
@@ -163,15 +167,31 @@ io.on("connection", (socket) => {
     }
   );
 
+  socket.on("hitl_decision", (data: HITLDecisionEvent) => {
+    console.log(`[HITL] Decision received: ${data.decision} for pause ${data.pauseId}`);
+    registerDecision(socket.id, data);
+  });
+
   socket.on("disconnect", () => {
-    console.log(`[Socket] Client disconnected: ${socket.id}`);
+    console.log(`[Socket] Disconnected: ${socket.id} `);
+    // activeSessions.delete(socket.id); // activeSessions was not defined, removed this line
+
+    // Cancel active HTTP generation plan request if socket drops
+    const activeGenAbort = activePlanControllers.get(socket.id);
+    if (activeGenAbort) {
+      console.log(`[Socket] Canceling in -flight plan generation for ${socket.id}`);
+      activeGenAbort.abort();
+      activePlanControllers.delete(socket.id);
+    }
+
+    cleanupEmitter(socket.id);
   });
 });
 
 const PORT = parseInt(process.env.PORT || "3001");
 server.listen(PORT, () => {
-  console.log(`[Verifai Agent] Running on port ${PORT}`);
-  console.log(`[Models] Vision:  gemini-3-flash (Computer Use — interaction + DOM decisions)`);
-  console.log(`[Models] Flash:   gemini-2.5-flash (Fallback reasoning + error recovery)`);
-  console.log(`[Models] Lite:    gemini-2.5-flash-lite (Summarization, verification, parsing)`);
+  console.log(`[Verifai Agent] Running on port ${PORT} `);
+  console.log(`[Models] Vision: gemini - 3 - flash(Computer Use — interaction + DOM decisions)`);
+  console.log(`[Models] Flash: gemini - 2.5 - flash(Fallback reasoning + error recovery)`);
+  console.log(`[Models] Lite: gemini - 2.5 - flash - lite(Summarization, verification, parsing)`);
 });

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import type { TestPlan, BugReport, Bug } from "@verifai/types";
+import type { TestPlan, BugReport, Bug, HITLPauseEvent, HITLLogEntry } from "@verifai/types";
 import { socket } from "@/lib/socket";
 import { voicePlayer } from "@/lib/audio";
 import Header from "@/components/Header";
@@ -51,6 +51,10 @@ export default function Home() {
   const [isPaused, setIsPaused] = useState(false);
   const [isLoadingReport, setIsLoadingReport] = useState(false);
   const [voiceEnabled, setVoiceEnabled] = useState(false);
+
+  // HITL State
+  const [hitlPause, setHitlPause] = useState<HITLPauseEvent | null>(null);
+  const [hitlHistory, setHitlHistory] = useState<HITLLogEntry[]>([]);
 
   // Demo mode states
   const [demoMode, setDemoMode] = useState(false);
@@ -164,6 +168,23 @@ export default function Home() {
         voicePlayer.enqueue(event.audio, event.mimeType, event.text);
         break;
 
+      case "hitl_pause":
+        console.log("[HITL] Pause received:", event);
+        setHitlPause(event);
+        break;
+
+      case "hitl_resume":
+        console.log("[HITL] Resume received:", event);
+        setHitlPause(null);
+        if (event.decision) {
+          // Record the decision briefly in transcript without audio payload
+          setTranscriptLines((prev) => [
+            ...prev,
+            { text: `Human decision: ${event.decision}`, timestamp: new Date().toLocaleTimeString("en-US", { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' }), type: "info" }
+          ]);
+        }
+        break;
+
       case "session_complete":
         setIsRunning(false);
         setIsComplete(true);
@@ -201,6 +222,8 @@ export default function Home() {
             })),
           };
         });
+        setHitlPause(null);
+        setHitlHistory([]);
         break;
 
       case "error":
@@ -272,6 +295,8 @@ export default function Home() {
     setCollectedBugs([]);
     setTranscriptLines([]);
     setCurrentScreenshot(null);
+    setHitlPause(null);
+    setHitlHistory([]);
 
     const agentUrl = process.env.NEXT_PUBLIC_AGENT_URL || "http://localhost:3001";
     socket.connect(agentUrl);
@@ -308,6 +333,7 @@ export default function Home() {
     setCollectedBugs([]);
     setTranscriptLines([]);
     setCurrentScreenshot(null);
+    setHitlPause(null);
 
     const agentUrl = process.env.NEXT_PUBLIC_AGENT_URL || "http://localhost:3001";
     socket.connect(agentUrl);
@@ -340,6 +366,7 @@ export default function Home() {
     setIncompleteStepIds([]);
     setCollectedBugs([]);
     setCurrentScreen(2);
+    setHitlPause(null);
 
     const agentUrl = process.env.NEXT_PUBLIC_AGENT_URL || "http://localhost:3001";
     socket.connect(agentUrl);
@@ -374,6 +401,7 @@ export default function Home() {
       setTranscriptLines([]);
       setIncompleteStepIds([]);
       setCollectedBugs([]);
+      setHitlPause(null);
       setTestPlan((prev) => {
         if (!prev) return prev;
         return {
@@ -579,6 +607,8 @@ export default function Home() {
     setUserIncompleteStepIds([]);
     setCollectedBugs([]);
     setConfigureError(null);
+    setHitlPause(null);
+    setHitlHistory([]);
   };
 
   return (
@@ -617,6 +647,8 @@ export default function Home() {
           isLoadingReport={isLoadingReport}
           voiceEnabled={voiceEnabled}
           onToggleVoice={() => setVoiceEnabled(prev => !prev)}
+          hitlPause={hitlPause}
+          hitlHistory={hitlHistory}
         />
       )}
 

@@ -41,6 +41,15 @@ import {
   DEMO_FALLBACK_ENABLED,
   demoStepResults,
 } from "../lib/demo-fallback.js";
+import {
+  shouldPauseForAction,
+  shouldPauseForVerification,
+  classifyPauseReason,
+  generateQuestion,
+  pauseForHuman,
+  getAuditLog,
+} from "../lib/hitl.js";
+import type { HITLLogEntry, HITLDecisionEvent } from "@verifai/types";
 
 // ─── Helpers ────────────────────────────────────────────
 
@@ -134,6 +143,7 @@ export async function runSession(
   const bugs: Bug[] = [];
   const bugScreenshots = new Map<string, string>();
   const actionLog: string[] = [];
+  const hitlLog: HITLLogEntry[] = [];
   let incompleteCount = 0;
 
   // Use the caller-supplied abort token if provided, otherwise create one locally.
@@ -240,6 +250,7 @@ export async function runSession(
       // after the race has already resolved via skip or timeout.
       const visionPromise = executeStepWithVisionLoop(
         socket,
+        _sessionId,
         step,
         actionLog,
         geminiCtx,
@@ -351,6 +362,12 @@ export async function runSession(
   // ── Phase 6: Compile report, upload screenshots, create Jira tickets ──
   let reportId = `rpt-${Date.now()}`;
 
+  // Collect HITL audit log
+  const hitlAuditLog = getAuditLog(_sessionId);
+  if (hitlAuditLog.length > 0) {
+    emitNarration(socket, `[INFO] ${hitlAuditLog.length} human intervention(s) logged`);
+  }
+
   emitNarration(socket, "[INFO] Compiling report...");
 
   try {
@@ -430,6 +447,7 @@ async function waitWhilePaused(
 
 async function executeStepWithVisionLoop(
   socket: Socket,
+  sessionId: string,
   step: TestStep,
   actionLog: string[],
   ctx: GeminiCallContext,
@@ -559,6 +577,52 @@ async function executeStepWithVisionLoop(
     // Log every action decision clearly
     console.log(`[Step ${step.id}] action ${actionNum + 1}/${MAX_ACTIONS_PER_STEP}: type=${action.type}${action.coordinate ? ` coord=[${action.coordinate}]` : ""}${action.text ? ` text="${action.text.slice(0, 40)}"` : ""}${action.key ? ` key=${action.key}` : ""}${action.url ? ` url=${action.url}` : ""}`);
     console.log(`[Step ${step.id}] reasoning: ${(action.reasoning ?? "—").slice(0, 120)}`);
+
+    // ┌──────────────────────────────────────────────┐
+    // │ 2c. HITL CHECK — Low confidence action       │
+    // └──────────────────────────────────────────────┘
+    if (shouldPauseForAction(action)) {
+      const reason = classifyPauseReason(action, {
+        currentUrl: await getCurrentUrl(),
+        stepText: step.text,
+      });
+      const question = generateQuestion(reason, action, step.text);
+
+      const decision = await pauseForHuman(socket, sessionId, {
+        stepId: step.id,
+        stepText: step.text,
+        reason,
+        question,
+        screenshotBase64: screenshot,
+        suggestedAction: action,
+        confidence: action.confidence ?? 0,
+      });
+
+      // Apply decision
+      switch (decision.decision) {
+        case "proceed":
+          // Continue with the AI's action
+          break;
+        case "skip":
+          return { status: "incomplete" as const, incompleteReason: undefined };
+        case "retry":
+          // Re-take screenshot and re-analyze — continue the action loop
+          continue;
+        case "abort":
+          throw new Error("Session aborted by human operator");
+        case "override":
+          if (decision.overrideAction) {
+            action = {
+              type: decision.overrideAction.type as any,
+              coordinate: decision.overrideAction.coordinate,
+              text: decision.overrideAction.text,
+              reasoning: `Human override: ${decision.overrideAction.reasoning || "manual action"}`,
+              confidence: 1.0,
+            };
+          }
+          break;
+      }
+    }
 
     // Abort/skip check after decideAction resolves (before touching the browser)
     if (checkAbort()) return { status: "incomplete" };
@@ -750,6 +814,74 @@ async function executeStepWithVisionLoop(
 
     // Abort/skip check after verifyStep resolves
     if (checkAbort()) return { status: "incomplete" };
+
+    // ┌──────────────────────────────────────────────┐
+    // │ 6b. HITL CHECK — Ambiguous verification      │
+    // └──────────────────────────────────────────────┘
+    if (shouldPauseForVerification(v)) {
+      const decision = await pauseForHuman(socket, sessionId, {
+        stepId: step.id,
+        stepText: step.text,
+        reason: "verification_ambiguous",
+        question: generateQuestion("verification_ambiguous", { type: "screenshot" } as any, step.text),
+        screenshotBase64: verifyShot,
+        confidence: v.confidence ?? 0,
+      });
+
+      if (decision.decision === "proceed") {
+        // Human says it passed
+        emitNarration(socket, `[OK] Step passed (human confirmed)`);
+        return { status: "passed" as const, lastScreenshot };
+      } else if (decision.decision === "skip") {
+        // Human says it failed
+        emitNarration(socket, `[ERROR] Step failed (human confirmed)`);
+        return {
+          status: "failed" as const,
+          lastScreenshot,
+          bug: {
+            id: `bug-${Date.now()}`,
+            stepId: step.id,
+            title: `Human-confirmed failure: ${step.text}`,
+            description: `${v.finding}. Human operator confirmed this is a failure.`,
+            severity: v.severity || "medium",
+            screenshotUrl: "",
+            expectedBehavior: step.expectedBehavior,
+            actualBehavior: v.finding,
+            failureType: "assertion",
+          },
+        };
+      } else if (decision.decision === "retry") {
+        // Re-verify with fresh screenshot
+        // Fall through to take another screenshot and verify again
+        // (Simplest: just let the normal flow re-run by not returning)
+        await new Promise((r) => setTimeout(r, 1000));
+        const retryShot = await takeScreenshot();
+        const retryV = await verifyStep(retryShot, step.expectedBehavior, ctx);
+        if (retryV.passed) {
+          emitNarration(socket, `[OK] Step passed on re-verification`);
+          return { status: "passed" as const, lastScreenshot: retryShot };
+        } else {
+          emitNarration(socket, `[ERROR] Step still failing on re-verification: ${retryV.finding}`);
+          return {
+            status: "failed" as const,
+            lastScreenshot: retryShot,
+            bug: {
+              id: `bug-${Date.now()}`,
+              stepId: step.id,
+              title: `Failed: ${step.text}`,
+              description: retryV.finding,
+              severity: retryV.severity || "medium",
+              screenshotUrl: "",
+              expectedBehavior: step.expectedBehavior,
+              actualBehavior: retryV.finding,
+              failureType: "assertion",
+            },
+          };
+        }
+      } else if (decision.decision === "abort") {
+        throw new Error("Session aborted by human operator");
+      }
+    }
 
     if (v.passed) {
       emitNarration(socket, `[OK] Step passed: ${v.finding}`);
