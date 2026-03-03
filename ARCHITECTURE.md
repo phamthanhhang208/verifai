@@ -16,66 +16,67 @@ graph TD
     %% Client / Frontend
     subgraph Frontend["Web Client (Next.js)"]
         Config["Configure Test"]
-        Exec["Execute Session (WebSocket connection)"]
-        HITL_UI["HITL Overlay (Human Intervention)"]
+        Exec["Execute Session (WebSocket)"]
+        HITL_UI["HITL Overlay"]
         Runs["Test History Dashboard"]
-        Exec -.-> HITL_UI
     end
-    class Frontend,Config,Exec,HITL_UI,Runs frontend;
 
     %% Server / Backend
     subgraph Backend["Agent Server (Node.js)"]
-        Session["Session Manager (State & Execution Loop)"]
-        Playwright["Playwright Automation Node"]
+        Session["Session Manager"]
+        Playwright["Playwright Automation"]
         HITL_Mgr["HITL Manager"]
         Demo_Mgr["Demo Recording Manager"]
-        
-        Session <--> Playwright
-        Session <--> HITL_Mgr
-        Session <--> Demo_Mgr
     end
-    class Backend,Session,Playwright,HITL_Mgr,Demo_Mgr backend;
 
     %% AI Models
     subgraph AI["Google Gemini API"]
         G3F["Gemini 3 Flash (Computer Use)"]
         G25FL["Gemini 2.5 Flash Lite (Verify)"]
-        G25F["Gemini 2.5 Flash (Fallback Reasoning)"]
+        G25F["Gemini 2.5 Flash (Fallback)"]
     end
-    class AI,G3F,G25FL,G25F ai;
 
     %% Storage & Infrastructure
     subgraph Storage["Google Cloud Platform"]
-        Firestore["Firestore (Test Reports & History)"]
-        GCS["Cloud Storage (Screenshots)"]
+        Firestore["Firestore (Database)"]
+        GCS["Cloud Storage (Images)"]
     end
-    class Storage,Firestore,GCS storage;
 
     %% Third-Party Integrations
     subgraph External["External Integrations"]
-        Jira["Jira Cloud API (Bug Tracking)"]
+        Jira["Jira Cloud API"]
     end
-    class External,Jira external;
 
-    %% Data Flow
-    Config -->|Target URL, Spec Details| Session
-    Exec <-->|Socket.io (Live Transcript, DOM state)| Session
+    %% Data Flow & Relationships
+    Config -->|Target URL & Spec| Session
+    Exec <-->|Socket.io: Live DOM & State| Session
+    
+    Session <--> Playwright
+    Session <--> HITL_Mgr
+    Session <--> Demo_Mgr
     
     Session -->|Screenshot + Context| G3F
-    G3F -->|Action Decision + Confidence| Session
+    G3F -->|Action Decision| Session
     
     Session -->|Screenshot + Objective| G25FL
-    G25FL -->|Verification Status + Confidence| Session
+    G25FL -->|Verification Status| Session
     
     Session -.->|Low Confidence Event| HITL_Mgr
-    HITL_Mgr -->|hitl_pause| HITL_UI
-    HITL_UI -->|hitl_decision| HITL_Mgr
+    HITL_Mgr -.->|hitl_pause| HITL_UI
+    HITL_UI -.->|hitl_decision| HITL_Mgr
     
-    Session -->|Create Jira Ticket| Jira
-    Session -->|Upload Bug Images| GCS
-    Session -->|Save Structured Report| Firestore
+    Session -->|Create Ticket| Jira
+    Session -->|Upload Media| GCS
+    Session -->|Save Report| Firestore
     
     Runs -->|Fetch history| Firestore
+
+    %% Assign Classes
+    class Config,Exec,HITL_UI,Runs frontend;
+    class Session,Playwright,HITL_Mgr,Demo_Mgr backend;
+    class G3F,G25FL,G25F ai;
+    class Firestore,GCS storage;
+    class Jira external;
 ```
 
 ## Core Components
