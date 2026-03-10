@@ -5,78 +5,51 @@ Verifai uses a modern, real-time architecture optimized for AI-driven browser au
 ## High-Level System Diagram
 
 ```mermaid
-graph TD
-    %% Define Styles
-    classDef frontend fill:#3b82f6,stroke:#1d4ed8,stroke-width:2px,color:white;
-    classDef backend fill:#10b981,stroke:#047857,stroke-width:2px,color:white;
-    classDef ai fill:#8b5cf6,stroke:#6d28d9,stroke-width:2px,color:white;
-    classDef storage fill:#f59e0b,stroke:#b45309,stroke-width:2px,color:white;
-    classDef external fill:#ef4444,stroke:#b91c1c,stroke-width:2px,color:white;
+sequenceDiagram
+    participant User
+    participant Frontend as Web Client (Next.js)
+    participant Agent as Session Manager (Node.js)
+    participant Browser as Playwright Browser
+    participant Vision as Gemini 3 Flash (Vision)
+    participant Verify as Gemini 2.5 Flash Lite
+    participant Storage as GCP (Firestore/GCS)
 
-    %% Client / Frontend
-    subgraph Frontend["Web Client (Next.js)"]
-        Config["Configure Test"]
-        Exec["Execute Session (WebSocket)"]
-        HITL_UI["HITL Overlay"]
-        Runs["Test History Dashboard"]
+    User->>Frontend: Enter Target URL & Test Spec
+    Frontend->>Verify: Parse spec into TestPlan
+    Verify-->>Frontend: JSON TestPlan
+    Frontend->>Agent: Start Session (WebSocket)
+    
+    Agent->>Browser: Launch & Navigate to URL
+    Browser-->>Agent: Initial Screenshot
+
+    loop For each Test Step
+        Agent->>Browser: step_start (Take Screenshot)
+        Browser-->>Agent: Screenshot & DOM
+        
+        Note over Agent,Vision: The Vision Loop (decideAction)
+        Agent->>Vision: Screenshot + Objective
+        Vision-->>Agent: Computer Use Action (click, type, etc.)
+        
+        alt Low Confidence
+            Agent->>Frontend: Pause for HITL
+            User->>Frontend: Approve/Override/Skip
+            Frontend-->>Agent: Human Decision
+        end
+        
+        Agent->>Browser: Execute Action
+        Agent->>Browser: Take Screenshot
+        
+        Note over Agent,Verify: The Verification Loop
+        Agent->>Verify: Screenshot + Expected Behavior
+        Verify-->>Agent: pass/fail/finding
+        
+        Agent->>Frontend: step_result
     end
 
-    %% Server / Backend
-    subgraph Backend["Agent Server (Node.js)"]
-        Session["Session Manager"]
-        Playwright["Playwright Automation"]
-        HITL_Mgr["HITL Manager"]
-        Demo_Mgr["Demo Recording Manager"]
-    end
-
-    %% AI Models
-    subgraph AI["Google Gemini API"]
-        G3F["Gemini 3 Flash (Computer Use)"]
-        G25FL["Gemini 2.5 Flash Lite (Verify)"]
-        G25F["Gemini 2.5 Flash (Fallback)"]
-    end
-
-    %% Storage & Infrastructure
-    subgraph Storage["Google Cloud Platform"]
-        Firestore["Firestore (Database)"]
-        GCS["Cloud Storage (Images)"]
-    end
-
-    %% Third-Party Integrations
-    subgraph External["External Integrations"]
-        Jira["Jira Cloud API"]
-    end
-
-    %% Data Flow & Relationships
-    Config -->|Target URL & Spec| Session
-    Exec <-->|Socket.io: Live DOM & State| Session
-    
-    Session <--> Playwright
-    Session <--> HITL_Mgr
-    Session <--> Demo_Mgr
-    
-    Session -->|Screenshot + Context| G3F
-    G3F -->|Action Decision| Session
-    
-    Session -->|Screenshot + Objective| G25FL
-    G25FL -->|Verification Status| Session
-    
-    Session -.->|Low Confidence Event| HITL_Mgr
-    HITL_Mgr -.->|hitl_pause| HITL_UI
-    HITL_UI -.->|hitl_decision| HITL_Mgr
-    
-    Session -->|Create Ticket| Jira
-    Session -->|Upload Media| GCS
-    Session -->|Save Report| Firestore
-    
-    Runs -->|Fetch history| Firestore
-
-    %% Assign Classes
-    class Config,Exec,HITL_UI,Runs frontend;
-    class Session,Playwright,HITL_Mgr,Demo_Mgr backend;
-    class G3F,G25FL,G25F ai;
-    class Firestore,GCS storage;
-    class Jira external;
+    Note over Agent,Storage: Post-Session Reporting
+    Agent->>Storage: Upload Screenshots (GCS)
+    Agent->>Storage: Save Bug Reports (Firestore)
+    Agent->>Frontend: session_complete
 ```
 
 ## Core Components
