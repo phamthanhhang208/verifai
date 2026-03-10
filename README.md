@@ -30,14 +30,14 @@ For a detailed breakdown of the system components, data flow, and interactive di
 
 ## AI Models
 
-Multi-model architecture optimized for different task requirements:
+Verifai utilizes a multi-model architecture that routes tasks to the optimal Gemini model based on capability and cost. For a detailed routing diagram, see the Architecture Documentation.
 
 | Task | Model | Why | Protocol |
 |------|-------|-----|----------|
-| Browser action decisions | Gemini 3 Flash | Best model for understanding screenshots and taking granular actions | Native Computer Use tool |
-| Verification & narration | Gemini 2.5 Flash Lite | Fast and cheap for simple DOM parsing and status updates | Vision + JSON prompt |
-| Spec parsing | Gemini 2.5 Flash Lite | Excellent for extracting steps from structured text | Text → JSON |
-| Fallback Reasoning | Gemini 2.5 Flash | Provides stronger reasoning when simple actions fail | Vision + Text |
+| **Browser action decisions** | Gemini 3 Flash | Best model for understanding complex spatial/visual action parsing | Native Computer Use tool |
+| **Verification & narration** | Gemini 2.5 Flash Lite | Fast and cheap for simple DOM parsing and status updates | Vision + JSON prompt |
+| **Spec parsing** | Gemini 2.5 Flash Lite | Excellent for extracting steps from structured text | Text → JSON |
+| **Fallback Reasoning** | Gemini 2.5 Flash | Provides in-depth reasoning when vision loops fail | Vision + Text |
 
 ## Tri-State Reporting
 
