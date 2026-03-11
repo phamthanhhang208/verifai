@@ -54,8 +54,7 @@ steps:
         PLAYWRIGHT_NAVIGATION_TIMEOUT_MS=${_PLAYWRIGHT_NAVIGATION_TIMEOUT_MS},
         CONFLUENCE_BASE_URL=${_CONFLUENCE_BASE_URL},
         CONFLUENCE_EMAIL=${_CONFLUENCE_EMAIL},
-        CORS_ORIGIN=${_CORS_ORIGIN},
-        PORT=3001
+        CORS_ORIGIN=${_CORS_ORIGIN}
       # Sensitive values pulled from Secret Manager.
       # Secrets must exist before running: GEMINI_API_KEY, JIRA_API_TOKEN,
       # CONFLUENCE_API_TOKEN, verifai-sa-key (service-account.json contents)

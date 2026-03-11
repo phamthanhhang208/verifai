@@ -22,7 +22,7 @@ gcloud artifacts repositories create verifai \
 # ─── 2. Build and push agent image ──────────────────────
 echo ""
 echo "[2/5] Building agent Docker image..."
-docker build -t "${REGISTRY}/${AGENT_SERVICE}:latest" -f apps/agent/Dockerfile .
+docker build --platform linux/amd64 -t "${REGISTRY}/${AGENT_SERVICE}:latest" -f apps/agent/Dockerfile .
 docker push "${REGISTRY}/${AGENT_SERVICE}:latest"
 
 # ─── 3. Deploy agent to Cloud Run ───────────────────────
@@ -60,8 +60,7 @@ PLAYWRIGHT_NAVIGATION_TIMEOUT_MS=${PLAYWRIGHT_NAVIGATION_TIMEOUT_MS:-15000},\
 CONFLUENCE_BASE_URL=${CONFLUENCE_BASE_URL},\
 CONFLUENCE_EMAIL=${CONFLUENCE_EMAIL},\
 CONFLUENCE_API_TOKEN=${CONFLUENCE_API_TOKEN},\
-CORS_ORIGIN=${CORS_ORIGIN:-*},\
-PORT=3001" \
+CORS_ORIGIN=${CORS_ORIGIN:-*}" \
   --set-secrets="GOOGLE_APPLICATION_CREDENTIALS_JSON=verifai-sa-key:latest"
 
 # Get the Cloud Run URL

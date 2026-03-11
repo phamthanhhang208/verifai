@@ -44,10 +44,10 @@ RUN cd apps/agent && npx playwright install chromium
 # Build TypeScript
 RUN cd apps/agent && npm run build
 
-EXPOSE 3001
+EXPOSE 8080
 
-# Health check for Cloud Run
+# Health check — uses PORT env var (Cloud Run injects 8080, local default 3001)
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD curl -f http://localhost:3001/health || exit 1
+  CMD curl -f http://localhost:${PORT:-3001}/health || exit 1
 
 CMD ["node", "apps/agent/dist/index.js"]
