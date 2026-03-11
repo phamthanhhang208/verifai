@@ -88,8 +88,12 @@ export async function decideAction(
       - Use the computer_use tool to perform the action
       - IMPORTANT: Use the @(x,y) coordinates from the accessibility tree above for precise targeting
       - Click coordinates must target the CENTER of the element you want to interact with
-      - For text input fields: click the field coordinate first, then use type with the text
+      - For text input fields: use the type action with the field's coordinate AND the text — this focuses the field and enters text in ONE action (do NOT send a separate click first)
+      - If the step involves filling MULTIPLE fields, handle them ONE AT A TIME — type into the first field, then on the next turn type into the next field, etc.
+      - CRITICAL: Before typing into any field, check the accessibility tree and screenshot for fields that ALREADY HAVE VALUES. Skip fields that are already filled and move to the NEXT EMPTY field. Look at your previous actions to see what you already did.
+      - After ALL fields are filled, click the submit/continue button — do NOT keep re-typing into fields that already have values
       - If the expected outcome is ALREADY visible on screen, respond with text "STEP_COMPLETE"
+      - If an error message appears on screen and the EXPECTED OUTCOME describes that error (e.g. "error message should appear", "user should be locked out"), respond with text "STEP_COMPLETE" — the error IS the expected result
       - Be precise with pixel coordinates — cross-reference the screenshot with the accessibility tree coordinates
 
       After deciding the action, also assess your CONFIDENCE (0.0 to 1.0):
@@ -120,8 +124,11 @@ export async function decideAction(
         ],
       },
     };
-    // @ts-expect-error: Weird querk of GoogleGenAI
-    const response = await getAI(ctx?.apiKey).models.generateContent(requestBody);
+
+    const response = await getAI(ctx?.apiKey).models.generateContent(
+      // @ts-expect-error: Weird querk of GoogleGenAI
+      requestBody,
+    );
 
     return parseComputerUseResponse(response);
   };
@@ -282,10 +289,10 @@ Viewport is 1280×720. Use the computer_use tool.`,
         tools: [
           {
             computerUse: {
-              //environment: Environment.ENVIRONMENT_BROWSER
+              //environment: Environment.ENVIRONMENT_BROWSER,
               // @ts-expect-error: Weird querk of GoogleGenAI
               environment: "ENVIRONMENT_BROWSER",
-            }
+            },
           },
         ],
       },
@@ -315,8 +322,14 @@ export async function fallbackDecideAction(
   aomSnapshot: string,
   step: TestStep,
   ctx?: GeminiCallContext,
+  previousActions: string[] = [],
 ): Promise<ComputerUseAction> {
   const callFn = async () => {
+    const prevContext =
+      previousActions.length > 0
+        ? `\nActions already completed this step (DO NOT repeat these):\n${previousActions.join("\n")}`
+        : "";
+
     console.log(`[Gemini] fallbackDecideAction → model: ${MODELS.flash}`);
     const response = await getAI(ctx?.apiKey).models.generateContent({
       model: MODELS.flash,
@@ -328,12 +341,14 @@ export async function fallbackDecideAction(
             {
               text: `Browser QA agent. Viewport 1280×720. Task: "${step.text}". Expected: "${step.expectedBehavior}".
     ${step.targetElement ? `Element hint: ${step.targetElement}` : ""}
+    ${prevContext}
 
     Accessibility tree (with element center coordinates @(x,y)):
     ${aomSnapshot}
 
     Decide the SINGLE NEXT action to make progress on the task.
     IMPORTANT: Use the @(x,y) coordinates from the accessibility tree for precise targeting.
+    CRITICAL: Check which fields ALREADY HAVE VALUES (visible in the accessibility tree or screenshot). Do NOT retype into filled fields — advance to the NEXT EMPTY field or click the submit/continue button.
     Return ONLY a JSON object — no markdown, no extra text.
 
     Action formats:
@@ -540,12 +555,15 @@ export async function verifyStep(
 
 Expected: ${expectedBehavior}
 
+CRITICAL RULE — EXPECTED ERRORS ARE NOT BUGS:
+If the expected behavior describes an error message, warning, validation message, or blocked state (e.g. "error message appears", "user is locked out", "login fails with error"), then SEEING that error on screen means the test PASSED. The application is behaving correctly by showing the expected error. Only mark as FAILED if the expected error is NOT shown, or if something DIFFERENT from the expected behavior occurs.
+
 VERIFICATION CHECKLIST — check ALL of these:
-1. Is the expected content visible on screen?
+1. Does the screen match the expected behavior? This includes expected error messages, warnings, and validation states.
 2. Are all images loading correctly? Look for: broken images, placeholder images, or images that don't match their labels (e.g. a dog photo for a "Backpack" product is a bug)
 3. Are images UNIQUE where they should be? If multiple different items all show the SAME image, that is a bug
 4. Do text labels, names, and prices look correct and match what you'd expect?
-5. Are there any error messages, broken layouts, or visual glitches?
+5. Are there any UNEXPECTED error messages, broken layouts, or visual glitches? (Error messages that match the expected behavior are NOT bugs)
 
 Password fields showing masked characters (dots/asterisks) is NORMAL — not a bug.
 
@@ -786,7 +804,7 @@ export async function generateVoiceNarration(
           },
         ],
         config: {
-          responseModalities: ['AUDIO'],
+          responseModalities: ["AUDIO"],
           speechConfig: {
             voiceConfig: {
               prebuiltVoiceConfig: {
@@ -803,7 +821,9 @@ export async function generateVoiceNarration(
 
       for (const part of candidate.content.parts) {
         if (part.inlineData?.mimeType?.startsWith("audio/")) {
-          console.log(`[TTS] Generated audio: ${part?.inlineData?.data?.length} bytes, type ${part.inlineData.mimeType}`);
+          console.log(
+            `[TTS] Generated audio: ${part?.inlineData?.data?.length} bytes, type ${part.inlineData.mimeType}`,
+          );
           return {
             audio: part.inlineData.data!, // base64
             mimeType: part.inlineData.mimeType,
