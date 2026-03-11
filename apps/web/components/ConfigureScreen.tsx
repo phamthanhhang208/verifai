@@ -251,9 +251,9 @@ export default function ConfigureScreen({
                     <ul className="text-xs text-gray-400 space-y-0.5">
                       <li>
                         <span className="text-indigo-400 font-mono">
-                          KAN-46
+                          KAN-65
                         </span>{" "}
-                        · Authentication flows
+                        · HITL validation flow
                       </li>
                       <li>
                         <span className="text-indigo-400 font-mono">
@@ -288,6 +288,38 @@ export default function ConfigureScreen({
               {/* CONFLUENCE TAB */}
               {activeTab === "confluence" && (
                 <div className="space-y-3">
+                  <div className="rounded-lg border border-indigo-500/20 bg-indigo-500/5 px-4 py-3">
+                    <p className="text-xs font-semibold text-indigo-300 mb-1">
+                      🧪 Demo mode
+                    </p>
+                    <p className="text-xs text-gray-400 mb-2">
+                      Try this sample Confluence spec page to quickly preview
+                      Verifai's parsing and test-plan generation.
+                    </p>
+                    <div className="flex items-center justify-between gap-2">
+                      <a
+                        href="https://xmichiyo99-1772436510775.atlassian.net/wiki/spaces/SD/pages/294914/SauceDemo+Product+Specification"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-xs text-indigo-400 hover:text-indigo-300 truncate"
+                      >
+                        SauceDemo Product Specification
+                      </a>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setConfluenceInput(
+                            "https://xmichiyo99-1772436510775.atlassian.net/wiki/spaces/SD/pages/294914/SauceDemo+Product+Specification",
+                          )
+                        }
+                        disabled={isLoading || confluenceLoading}
+                        className="shrink-0 text-xs text-indigo-300 hover:text-indigo-200 border border-indigo-500/30 hover:border-indigo-400/40 px-2 py-1 rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                      >
+                        Use demo page
+                      </button>
+                    </div>
+                  </div>
+
                   <div className="flex gap-2">
                     <div className="relative flex-1">
                       <BookOpen className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />

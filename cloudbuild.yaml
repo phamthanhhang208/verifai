@@ -41,9 +41,40 @@ steps:
       - '3'
       - '--session-affinity'
       - '--allow-unauthenticated'
+      - '--set-env-vars'
+      - >-
+        GEMINI_CALL_DELAY_MS=${_GEMINI_CALL_DELAY_MS},
+        JIRA_BASE_URL=${_JIRA_BASE_URL},
+        JIRA_EMAIL=${_JIRA_EMAIL},
+        JIRA_PROJECT_KEY=${_JIRA_PROJECT_KEY},
+        GCP_PROJECT_ID=$PROJECT_ID,
+        GCS_BUCKET_NAME=${_GCS_BUCKET_NAME},
+        FIRESTORE_COLLECTION=${_FIRESTORE_COLLECTION},
+        PLAYWRIGHT_TIMEOUT_MS=${_PLAYWRIGHT_TIMEOUT_MS},
+        PLAYWRIGHT_NAVIGATION_TIMEOUT_MS=${_PLAYWRIGHT_NAVIGATION_TIMEOUT_MS},
+        CONFLUENCE_BASE_URL=${_CONFLUENCE_BASE_URL},
+        CONFLUENCE_EMAIL=${_CONFLUENCE_EMAIL},
+        CORS_ORIGIN=${_CORS_ORIGIN},
+        PORT=3001
+      # Sensitive values pulled from Secret Manager.
+      # Secrets must exist before running: GEMINI_API_KEY, JIRA_API_TOKEN,
+      # CONFLUENCE_API_TOKEN, verifai-sa-key (service-account.json contents)
+      - '--update-secrets'
+      - 'GEMINI_API_KEY=gemini-api-key:latest,JIRA_API_TOKEN=jira-api-token:latest,CONFLUENCE_API_TOKEN=confluence-api-token:latest,GOOGLE_APPLICATION_CREDENTIALS_JSON=verifai-sa-key:latest'
 
 substitutions:
   _REGION: us-central1
+  _GEMINI_CALL_DELAY_MS: '2000'
+  _JIRA_BASE_URL: ''
+  _JIRA_EMAIL: ''
+  _JIRA_PROJECT_KEY: KAN
+  _GCS_BUCKET_NAME: verifai-screenshots
+  _FIRESTORE_COLLECTION: reports
+  _PLAYWRIGHT_TIMEOUT_MS: '30000'
+  _PLAYWRIGHT_NAVIGATION_TIMEOUT_MS: '15000'
+  _CONFLUENCE_BASE_URL: ''
+  _CONFLUENCE_EMAIL: ''
+  _CORS_ORIGIN: '*'
 
 images:
   - '${_REGION}-docker.pkg.dev/$PROJECT_ID/verifai/verifai-agent:$COMMIT_SHA'
