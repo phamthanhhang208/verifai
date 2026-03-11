@@ -1,7 +1,17 @@
 "use client";
 
 import { useState } from "react";
-import { Link2, Monitor, Loader2, ArrowRight, Key, BookOpen, PenTool, Search, ExternalLink } from "lucide-react";
+import {
+  Link2,
+  Monitor,
+  Loader2,
+  ArrowRight,
+  Key,
+  BookOpen,
+  PenTool,
+  Search,
+  ExternalLink,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 
 type SourceTab = "jira" | "confluence" | "manual";
@@ -50,17 +60,37 @@ export default function ConfigureScreen({
   // Manual state
   const [manualText, setManualText] = useState("");
 
-  const tabs: { id: SourceTab; label: string; icon: typeof Link2; desc: string }[] = [
-    { id: "jira", label: "Jira Ticket", icon: Link2, desc: "Import from Jira issue" },
-    { id: "confluence", label: "Confluence", icon: BookOpen, desc: "Import from Confluence page" },
-    { id: "manual", label: "Manual", icon: PenTool, desc: "Paste spec text directly" },
+  const tabs: {
+    id: SourceTab;
+    label: string;
+    icon: typeof Link2;
+    desc: string;
+  }[] = [
+    {
+      id: "jira",
+      label: "Jira Ticket",
+      icon: Link2,
+      desc: "Import from Jira issue",
+    },
+    {
+      id: "confluence",
+      label: "Confluence",
+      icon: BookOpen,
+      desc: "Import from Confluence page",
+    },
+    {
+      id: "manual",
+      label: "Manual",
+      icon: PenTool,
+      desc: "Paste spec text directly",
+    },
   ];
 
   const inputClass = cn(
     "w-full bg-[#1A1C20] border border-gray-800 rounded-xl pl-10 pr-4 py-3",
     "text-sm text-white placeholder:text-gray-600",
     "focus:outline-none focus:border-indigo-500 transition-colors",
-    "disabled:opacity-50 disabled:cursor-not-allowed"
+    "disabled:opacity-50 disabled:cursor-not-allowed",
   );
 
   // ─── Confluence: Fetch page content ───────────────────
@@ -76,8 +106,12 @@ export default function ConfigureScreen({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          pageUrl: confluenceInput.includes("http") ? confluenceInput : undefined,
-          pageId: !confluenceInput.includes("http") ? confluenceInput : undefined,
+          pageUrl: confluenceInput.includes("http")
+            ? confluenceInput
+            : undefined,
+          pageId: !confluenceInput.includes("http")
+            ? confluenceInput
+            : undefined,
           includeChildPages,
         }),
       });
@@ -144,15 +178,21 @@ export default function ConfigureScreen({
       <div className="w-full max-w-2xl bg-[#141517] rounded-2xl p-8 card-glow">
         {/* Header */}
         <div className="mb-8">
-          <h1 className="text-xl font-semibold text-white">Create New Test Run</h1>
-          <p className="mt-1 text-sm text-gray-400">Configure your AI-powered test session</p>
+          <h1 className="text-xl font-semibold text-white">
+            Create New Test Run
+          </h1>
+          <p className="mt-1 text-sm text-gray-400">
+            Configure your AI-powered test session
+          </p>
         </div>
 
         {/* Inputs */}
         <div className="space-y-5">
           {/* Target URL */}
           <div className="space-y-2">
-            <label className="block text-sm text-gray-400">Target Application URL</label>
+            <label className="block text-sm text-gray-400">
+              Target Application URL
+            </label>
             <div className="relative">
               <Monitor className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
               <input
@@ -168,7 +208,9 @@ export default function ConfigureScreen({
 
           {/* ─── Source Tabs ─────────────────────────────── */}
           <div className="space-y-3">
-            <label className="block text-sm text-gray-400">Test Specification Source</label>
+            <label className="block text-sm text-gray-400">
+              Test Specification Source
+            </label>
             <div className="flex gap-2">
               {tabs.map((tab) => {
                 const Icon = tab.icon;
@@ -183,7 +225,7 @@ export default function ConfigureScreen({
                       isActive
                         ? "bg-indigo-500/15 border-indigo-500/40 text-indigo-400"
                         : "bg-[#1A1C20] border-gray-800 text-gray-500 hover:text-gray-300 hover:border-gray-600",
-                      "disabled:opacity-50 disabled:cursor-not-allowed"
+                      "disabled:opacity-50 disabled:cursor-not-allowed",
                     )}
                   >
                     <Icon className="w-4 h-4" />
@@ -200,10 +242,29 @@ export default function ConfigureScreen({
                 <div className="space-y-3">
                   {/* Demo disclaimer */}
                   <div className="rounded-lg border border-indigo-500/20 bg-indigo-500/5 px-4 py-3">
-                    <p className="text-xs font-semibold text-indigo-300 mb-1">Demo Tickets</p>
+                    <p className="text-xs font-semibold text-indigo-300 mb-1">
+                      🧪 Demo mode
+                    </p>
+                    <p className="text-xs text-gray-400 mb-2">
+                      Use these sample Jira tickets to see Verifai in action:
+                    </p>
                     <ul className="text-xs text-gray-400 space-y-0.5">
-                      <li><span className="text-indigo-400 font-mono">KAN-5</span> — Happy path (login → add to cart → checkout)</li>
-                      <li><span className="text-indigo-400 font-mono">KAN-28</span> — Error flow (validates broken UI states)</li>
+                      <li>
+                        <span className="text-indigo-400 font-mono">
+                          KAN-46
+                        </span>{" "}
+                        · Authentication flows
+                      </li>
+                      <li>
+                        <span className="text-indigo-400 font-mono">
+                          KAN-47
+                        </span>{" "}
+                        · Full purchase flow (catches real bugs!)
+                      </li>
+                      <li>
+                        <span className="text-indigo-400 font-mono">KAN-5</span>{" "}
+                        · Happy path smoke test
+                      </li>
                     </ul>
                   </div>
                   <div className="relative">
@@ -218,7 +279,8 @@ export default function ConfigureScreen({
                     />
                   </div>
                   <p className="text-xs text-gray-600">
-                    Enter a Jira ticket ID. Verifai will read the summary, description, and acceptance criteria.
+                    Enter a Jira ticket ID. Verifai will read the summary,
+                    description, and acceptance criteria.
                   </p>
                 </div>
               )}
@@ -240,11 +302,15 @@ export default function ConfigureScreen({
                     </div>
                     <button
                       onClick={handleFetchConfluence}
-                      disabled={!confluenceInput.trim() || confluenceLoading || isLoading}
+                      disabled={
+                        !confluenceInput.trim() ||
+                        confluenceLoading ||
+                        isLoading
+                      }
                       className={cn(
                         "flex items-center gap-2 px-4 py-2.5 rounded-xl border text-sm font-medium transition-all duration-200",
                         "bg-indigo-500/15 border-indigo-500/30 text-indigo-400 hover:bg-indigo-500/25",
-                        "disabled:opacity-40 disabled:cursor-not-allowed"
+                        "disabled:opacity-40 disabled:cursor-not-allowed",
                       )}
                     >
                       {confluenceLoading ? (
@@ -292,14 +358,19 @@ export default function ConfigureScreen({
                       </div>
                       {confluenceContent.childPageCount > 0 && (
                         <p className="text-xs text-emerald-400">
-                          + {confluenceContent.childPageCount} child page(s) included
+                          + {confluenceContent.childPageCount} child page(s)
+                          included
                         </p>
                       )}
                       <div className="max-h-36 overflow-y-auto text-xs text-gray-400 font-mono bg-black/30 rounded-lg p-3">
                         {confluenceContent.content.slice(0, 1500)}
                         {confluenceContent.content.length > 1500 && (
                           <span className="text-gray-600">
-                            {"\n\n"}... ({Math.round(confluenceContent.content.length / 1000)}k chars total)
+                            {"\n\n"}... (
+                            {Math.round(
+                              confluenceContent.content.length / 1000,
+                            )}
+                            k chars total)
                           </span>
                         )}
                       </div>
@@ -321,11 +392,12 @@ export default function ConfigureScreen({
                       "w-full bg-[#1A1C20] border border-gray-800 rounded-xl px-4 py-3",
                       "text-sm text-white placeholder:text-gray-600",
                       "focus:outline-none focus:border-indigo-500 transition-colors resize-none",
-                      "disabled:opacity-50 disabled:cursor-not-allowed"
+                      "disabled:opacity-50 disabled:cursor-not-allowed",
                     )}
                   />
                   <p className="text-xs text-gray-600">
-                    Describe acceptance criteria, user flows, or test steps in plain language.
+                    Describe acceptance criteria, user flows, or test steps in
+                    plain language.
                   </p>
                 </div>
               )}
@@ -336,7 +408,9 @@ export default function ConfigureScreen({
           <div className="space-y-2">
             <label className="block text-sm text-gray-400">
               Gemini API Key
-              <span className="ml-2 text-xs text-gray-600">(optional — falls back to server key)</span>
+              <span className="ml-2 text-xs text-gray-600">
+                (optional — falls back to server key)
+              </span>
             </label>
             <div className="relative">
               <Key className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
@@ -368,7 +442,7 @@ export default function ConfigureScreen({
               "flex items-center gap-2 px-6 py-2.5 rounded-lg",
               "bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium",
               "transition-all duration-200",
-              "disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-indigo-600"
+              "disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-indigo-600",
             )}
           >
             {isLoading ? (

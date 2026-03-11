@@ -22,7 +22,12 @@ import {
   ShieldAlert,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import type { TestPlan, StepStatus, HITLPauseEvent, HITLLogEntry } from "@verifai/types";
+import type {
+  TestPlan,
+  StepStatus,
+  HITLPauseEvent,
+  HITLLogEntry,
+} from "@verifai/types";
 import { socket } from "@/lib/socket";
 import HITLModal from "./HITLModal";
 
@@ -62,13 +67,19 @@ function StatusIcon({ status }: { status: StepStatus }) {
     case "pending":
       return <Circle className="w-4 h-4 text-gray-600 shrink-0 mt-0.5" />;
     case "running":
-      return <Loader2 className="w-4 h-4 text-indigo-500 shrink-0 mt-0.5 animate-spin" />;
+      return (
+        <Loader2 className="w-4 h-4 text-indigo-500 shrink-0 mt-0.5 animate-spin" />
+      );
     case "passed":
-      return <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0 mt-0.5" />;
+      return (
+        <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0 mt-0.5" />
+      );
     case "failed":
       return <XCircle className="w-4 h-4 text-rose-500 shrink-0 mt-0.5" />;
     case "incomplete":
-      return <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />;
+      return (
+        <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
+      );
   }
 }
 
@@ -116,8 +127,11 @@ export default function ExecuteScreen({
   hitlHistory,
 }: ExecuteScreenProps) {
   const transcriptEndRef = useRef<HTMLDivElement>(null);
-  const [stepTexts, setStepTexts] = useState<Record<string, string>>(
-    () => testPlan.steps.reduce((acc, s) => ({ ...acc, [s.id]: s.text }), {} as Record<string, string>)
+  const [stepTexts, setStepTexts] = useState<Record<string, string>>(() =>
+    testPlan.steps.reduce(
+      (acc, s) => ({ ...acc, [s.id]: s.text }),
+      {} as Record<string, string>,
+    ),
   );
   const [expandedImage, setExpandedImage] = useState<string | null>(null);
 
@@ -137,7 +151,12 @@ export default function ExecuteScreen({
     const startX = e.clientX;
     const startWidth = sidebarWidth;
     const onMouseMove = (ev: MouseEvent) => {
-      setSidebarWidth(Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, startWidth + ev.clientX - startX)));
+      setSidebarWidth(
+        Math.min(
+          SIDEBAR_MAX,
+          Math.max(SIDEBAR_MIN, startWidth + ev.clientX - startX),
+        ),
+      );
     };
     const onMouseUp = () => {
       document.removeEventListener("mousemove", onMouseMove);
@@ -152,7 +171,12 @@ export default function ExecuteScreen({
     const startY = e.clientY;
     const startHeight = transcriptHeight;
     const onMouseMove = (ev: MouseEvent) => {
-      setTranscriptHeight(Math.min(TRANSCRIPT_MAX, Math.max(TRANSCRIPT_MIN, startHeight - (ev.clientY - startY))));
+      setTranscriptHeight(
+        Math.min(
+          TRANSCRIPT_MAX,
+          Math.max(TRANSCRIPT_MIN, startHeight - (ev.clientY - startY)),
+        ),
+      );
     };
     const onMouseUp = () => {
       document.removeEventListener("mousemove", onMouseMove);
@@ -165,7 +189,10 @@ export default function ExecuteScreen({
   return (
     <div className="flex h-[calc(100vh-64px)] overflow-hidden">
       {/* LEFT PANEL */}
-      <div className="flex flex-col bg-surface-card shrink-0" style={{ width: sidebarWidth }}>
+      <div
+        className="flex flex-col bg-surface-card shrink-0"
+        style={{ width: sidebarWidth }}
+      >
         {/* Panel header */}
         <div className="px-4 py-4 border-b border-gray-800 flex items-center justify-between shrink-0">
           <span className="text-xs font-semibold tracking-widest uppercase text-gray-400">
@@ -189,7 +216,7 @@ export default function ExecuteScreen({
                   "flex items-start gap-3 px-4 py-3 border-l-2 border-transparent transition-colors",
                   isActive && "bg-indigo-500/10 border-indigo-500",
                   isIncomplete && "bg-amber-500/5 border-amber-500/30",
-                  isFailed && "bg-rose-500/5 border-rose-500/30"
+                  isFailed && "bg-rose-500/5 border-rose-500/30",
                 )}
               >
                 {hitlPause?.stepId === step.id ? (
@@ -202,7 +229,10 @@ export default function ExecuteScreen({
                     <textarea
                       value={stepTexts[step.id] ?? step.text}
                       onChange={(e) => {
-                        setStepTexts((prev) => ({ ...prev, [step.id]: e.target.value }));
+                        setStepTexts((prev) => ({
+                          ...prev,
+                          [step.id]: e.target.value,
+                        }));
                         e.target.style.height = "auto";
                         e.target.style.height = e.target.scrollHeight + "px";
                       }}
@@ -210,7 +240,10 @@ export default function ExecuteScreen({
                       className="w-full bg-transparent text-sm text-gray-300 focus:outline-none focus:text-white leading-relaxed resize-none overflow-hidden"
                       style={{ height: "auto" }}
                       ref={(el) => {
-                        if (el) { el.style.height = "auto"; el.style.height = el.scrollHeight + "px"; }
+                        if (el) {
+                          el.style.height = "auto";
+                          el.style.height = el.scrollHeight + "px";
+                        }
                       }}
                     />
                   ) : (
@@ -219,8 +252,9 @@ export default function ExecuteScreen({
                         className={cn(
                           "text-sm leading-relaxed flex-1",
                           isIncomplete ? "text-amber-500/70" : "text-gray-300",
-                          (step.status === "passed" || step.status === "failed") &&
-                          "line-through text-gray-500"
+                          (step.status === "passed" ||
+                            step.status === "failed") &&
+                            "line-through text-gray-500",
                         )}
                       >
                         {step.text}
@@ -236,14 +270,16 @@ export default function ExecuteScreen({
                         </button>
                       )}
                       {/* Per-step retry — after completion, for incomplete or failed steps */}
-                      {isComplete && (step.status === "incomplete" || step.status === "failed") && (
-                        <button
-                          onClick={() => onRetryStep(step.id)}
-                          className="shrink-0 text-xs text-indigo-400/60 hover:text-indigo-400 border border-indigo-500/20 hover:border-indigo-500/40 px-2 py-0.5 rounded transition-colors"
-                        >
-                          ↺ Retry
-                        </button>
-                      )}
+                      {isComplete &&
+                        (step.status === "incomplete" ||
+                          step.status === "failed") && (
+                          <button
+                            onClick={() => onRetryStep(step.id)}
+                            className="shrink-0 text-xs text-indigo-400/60 hover:text-indigo-400 border border-indigo-500/20 hover:border-indigo-500/40 px-2 py-0.5 rounded transition-colors"
+                          >
+                            ↺ Retry
+                          </button>
+                        )}
                     </div>
                   )}
                   {/* Incomplete reason badge — system reason takes priority over user-skip label */}
@@ -277,7 +313,7 @@ export default function ExecuteScreen({
                   "w-full flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-medium transition-colors",
                   isLoadingReport
                     ? "bg-gray-200 text-gray-500 cursor-wait"
-                    : "bg-white text-gray-900 hover:bg-gray-100"
+                    : "bg-white text-gray-900 hover:bg-gray-100",
                 )}
               >
                 {isLoadingReport ? (
@@ -295,7 +331,8 @@ export default function ExecuteScreen({
                   className="w-full flex items-center justify-center gap-2 py-2.5 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 text-amber-400 text-sm font-medium border border-amber-500/30 transition-colors"
                 >
                   <RefreshCw className="w-4 h-4" />
-                  Retry {incompleteStepIds.length} Incomplete Step{incompleteStepIds.length > 1 ? "s" : ""}
+                  Retry {incompleteStepIds.length} Incomplete Step
+                  {incompleteStepIds.length > 1 ? "s" : ""}
                 </button>
               )}
               <button
@@ -316,10 +353,14 @@ export default function ExecuteScreen({
                     "flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-medium transition-colors",
                     isPaused
                       ? "bg-emerald-600 hover:bg-emerald-500 text-white"
-                      : "bg-amber-500/15 hover:bg-amber-500/25 text-amber-400 border border-amber-500/30"
+                      : "bg-amber-500/15 hover:bg-amber-500/25 text-amber-400 border border-amber-500/30",
                   )}
                 >
-                  {isPaused ? <Play className="w-4 h-4" /> : <Pause className="w-4 h-4" />}
+                  {isPaused ? (
+                    <Play className="w-4 h-4" />
+                  ) : (
+                    <Pause className="w-4 h-4" />
+                  )}
                   {isPaused ? "Resume" : "Pause"}
                 </button>
 
@@ -345,7 +386,7 @@ export default function ExecuteScreen({
               onClick={onRunSession}
               className={cn(
                 "w-full flex items-center justify-center gap-2 py-2.5 rounded-lg",
-                "bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium transition-colors"
+                "bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium transition-colors",
               )}
             >
               <Play className="w-4 h-4" />
@@ -395,7 +436,9 @@ export default function ExecuteScreen({
             ) : (
               <div className="absolute inset-0 flex flex-col items-center justify-center gap-3">
                 <Monitor className="w-12 h-12 text-gray-700" />
-                <span className="text-sm text-gray-500">Ready to start autonomous session</span>
+                <span className="text-sm text-gray-500">
+                  Ready to start autonomous session
+                </span>
               </div>
             )}
 
@@ -408,13 +451,22 @@ export default function ExecuteScreen({
 
             <button
               onClick={onToggleVoice}
-              className={`absolute bottom-4 right-4 w-10 h-10 rounded-full flex items-center justify-center transition-all ${voiceEnabled
-                ? "bg-indigo-500/20 border border-indigo-500/40 text-indigo-400"
-                : "bg-[#1A1C20] border border-gray-700 text-gray-500 hover:text-gray-400"
-                }`}
-              title={voiceEnabled ? "Disable voice narration" : "Enable voice narration"}
+              className={`absolute bottom-4 right-4 w-10 h-10 rounded-full flex items-center justify-center transition-all ${
+                voiceEnabled
+                  ? "bg-indigo-500/20 border border-indigo-500/40 text-indigo-400"
+                  : "bg-[#1A1C20] border border-gray-700 text-gray-500 hover:text-gray-400"
+              }`}
+              title={
+                voiceEnabled
+                  ? "Disable voice narration"
+                  : "Enable voice narration"
+              }
             >
-              {voiceEnabled ? <Volume2 className="w-5 h-5 text-indigo-400" /> : <VolumeX className="w-5 h-5 text-gray-400" />}
+              {voiceEnabled ? (
+                <Volume2 className="w-5 h-5 text-indigo-400" />
+              ) : (
+                <VolumeX className="w-5 h-5 text-gray-400" />
+              )}
             </button>
           </div>
         </div>
@@ -428,12 +480,15 @@ export default function ExecuteScreen({
           >
             <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 flex items-center justify-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
               {[0, 1, 2].map((i) => (
-                <div key={i} className="w-0.5 h-0.5 rounded-full bg-indigo-400" />
+                <div
+                  key={i}
+                  className="w-0.5 h-0.5 rounded-full bg-indigo-400"
+                />
               ))}
             </div>
           </div>
 
-          <div className="absolute top-1 left-0 right-0 h-10 px-4 flex items-center justify-between text-sm text-gray-400 pointer-events-none z-0">
+          <div className="absolute -top-8 left-0 right-0 h-8 px-4 flex items-center justify-between text-sm text-gray-400 pointer-events-none z-0">
             {hitlPause ? (
               <span className="flex items-center gap-2 text-orange-400">
                 <ShieldAlert className="w-4 h-4 animate-pulse" />
@@ -455,7 +510,8 @@ export default function ExecuteScreen({
 
             {hitlHistory.length > 0 && !hitlPause && (
               <span className="text-gray-500">
-                {hitlHistory.length} HITL event{hitlHistory.length === 1 ? '' : 's'} recorded
+                {hitlHistory.length} HITL event
+                {hitlHistory.length === 1 ? "" : "s"} recorded
               </span>
             )}
           </div>
@@ -475,10 +531,18 @@ export default function ExecuteScreen({
 
           <div className="flex-1 overflow-y-auto bg-[#0A0A0B] p-3 font-mono text-xs">
             {transcriptLines.length === 0 ? (
-              <span className="text-gray-600">Waiting for session to start...</span>
+              <span className="text-gray-600">
+                Waiting for session to start...
+              </span>
             ) : (
               transcriptLines.map((line, i) => (
-                <div key={i} className={cn("mb-0.5 leading-relaxed", TRANSCRIPT_COLOR[line.type])}>
+                <div
+                  key={i}
+                  className={cn(
+                    "mb-0.5 leading-relaxed",
+                    TRANSCRIPT_COLOR[line.type],
+                  )}
+                >
                   <span className="text-gray-600 mr-2">[{line.timestamp}]</span>
                   {TRANSCRIPT_PREFIX[line.type]}
                   {line.text}
@@ -506,7 +570,9 @@ export default function ExecuteScreen({
           onClick={() => setExpandedImage(null)}
         >
           <div className="flex items-center justify-between p-4 flex-none">
-            <span className="text-gray-400 font-medium">Browser Screenshot</span>
+            <span className="text-gray-400 font-medium">
+              Browser Screenshot
+            </span>
             <button
               onClick={() => setExpandedImage(null)}
               className="px-4 py-2 bg-white/10 hover:bg-white/20 text-white rounded-lg transition-colors font-medium"

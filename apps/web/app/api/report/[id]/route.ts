@@ -1,24 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
-import { initializeApp, getApps } from "firebase-admin/app";
-import { getFirestore } from "firebase-admin/firestore";
-
-// Initialize Firebase Admin for Next.js API route
-if (getApps().length === 0) {
-  initializeApp({ projectId: process.env.GCP_PROJECT_ID });
-}
-const db = getFirestore();
+import { db, COLLECTION } from "@/lib/firebase-admin";
 
 export async function GET(
   _req: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
+  { params }: { params: Promise<{ id: string }> },
 ) {
   const { id } = await params;
 
   try {
-    const doc = await db
-      .collection(process.env.FIRESTORE_COLLECTION || "reports")
-      .doc(id)
-      .get();
+    const doc = await db.collection(COLLECTION).doc(id).get();
 
     if (!doc.exists) {
       return NextResponse.json({ error: "Report not found" }, { status: 404 });
