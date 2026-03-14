@@ -26,12 +26,12 @@ import {
 } from "../lib/playwright.js";
 import {
   decideAction,
+  visionFallbackDecideAction,
   escalatedDecideAction,
   verifyStep,
   generateNarration,
   generateVoiceNarration,
   retryAction,
-  fallbackDecideAction,
   type GeminiCallContext,
 } from "../lib/gemini.js";
 import { GeminiRateLimitError, MODELS } from "../lib/models.js";
@@ -162,7 +162,7 @@ export async function runSession(
   // Tracks whether the fallback model should be tried first.
   // Flipped to true when vision fails and fallback succeeds; reset to false
   // if vision later recovers so we don't permanently downgrade.
-  const modelState = { useFallback: false, escalated: false };
+  const modelState = { useVisionFallback: false, escalated: false };
   const failedStepIds = new Set<string>(); // Track failed steps for dependency checking
 
   try {
@@ -472,7 +472,7 @@ async function executeStepWithVisionLoop(
   step: TestStep,
   actionLog: string[],
   ctx: GeminiCallContext,
-  modelState: { useFallback: boolean; escalated: boolean },
+  modelState: { useVisionFallback: boolean; escalated: boolean },
   skipSignal?: Set<string>,
   abortToken?: { aborted: boolean },
 ): Promise<StepResult> {
@@ -520,114 +520,69 @@ async function executeStepWithVisionLoop(
     let action: ComputerUseAction | undefined;
 
     if (modelState.escalated) {
-      // Vision model said STEP_COMPLETE but verify disagreed — or looping detected — use pro model
+      // Pro model — loop detected or vision declared complete but verify disagreed
       try {
-        action = await escalatedDecideAction(
-          screenshot,
-          aom,
-          step,
-          stepActions,
-          ctx,
-        );
+        action = await escalatedDecideAction(screenshot, aom, step, stepActions, ctx);
         console.log(`[Step ${step.id}] escalated pro model responded`);
       } catch (proErr: any) {
-        if (
-          proErr instanceof GeminiRateLimitError ||
-          proErr.name === "GeminiRateLimitError"
-        ) {
+        if (proErr instanceof GeminiRateLimitError || proErr.name === "GeminiRateLimitError") {
           throw proErr;
         }
-        emitNarration(
-          socket,
-          `[WARN] Pro model error: ${proErr?.message?.slice(0, 80) ?? "unknown"}. Falling back to vision...`,
-        );
-        modelState.escalated = false;
-        try {
-          action = await decideAction(screenshot, aom, step, stepActions, ctx);
-        } catch {
-          if (actionNum < MAX_ACTIONS_PER_STEP - 1) continue;
-          break;
-        }
+        console.error(`[Pro] Model error (${MODELS.pro}):`, proErr?.message || proErr);
+        emitNarration(socket, `[ERROR] All models failed: ${proErr?.message?.slice(0, 80) ?? "unknown"}`);
+        if (actionNum < MAX_ACTIONS_PER_STEP - 1) continue;
+        break;
       }
-    } else if (modelState.useFallback) {
-      // Previous step required fallback — start there to avoid wasting vision quota
+    } else if (modelState.useVisionFallback) {
+      // Tier 2 — Computer Use fallback (primary vision was failing)
       try {
-        action = await fallbackDecideAction(
-          screenshot,
-          aom,
-          step,
-          ctx,
-          stepActions,
-        );
-      } catch (fallbackErr: any) {
-        if (
-          fallbackErr instanceof GeminiRateLimitError ||
-          fallbackErr.name === "GeminiRateLimitError"
-        ) {
-          throw fallbackErr;
+        action = await visionFallbackDecideAction(screenshot, aom, step, stepActions, ctx);
+      } catch (visionFallbackErr: any) {
+        if (visionFallbackErr instanceof GeminiRateLimitError || visionFallbackErr.name === "GeminiRateLimitError") {
+          throw visionFallbackErr;
         }
-        emitNarration(
-          socket,
-          `[WARN] Fallback model error, retrying with vision...`,
-        );
+        console.error(`[VisionFallback] Model error (${MODELS.visionFallback}):`, visionFallbackErr?.message || visionFallbackErr);
+        emitNarration(socket, `[WARN] Vision fallback failed — trying pro model...`);
         try {
-          action = await decideAction(screenshot, aom, step, stepActions, ctx);
-          modelState.useFallback = false;
-        } catch {
+          action = await escalatedDecideAction(screenshot, aom, step, stepActions, ctx);
+          emitNarration(socket, `[INFO] Pro model succeeded`);
+        } catch (proErr: any) {
+          console.error(`[Pro fallback] Model error (${MODELS.pro}):`, proErr?.message || proErr);
           emitNarration(socket, `[ERROR] All models failed`);
           if (actionNum < MAX_ACTIONS_PER_STEP - 1) continue;
           break;
         }
       }
     } else {
-      // Normal path — try vision first
+      // Normal path — Tier 1: primary vision model (Computer Use)
       try {
         action = await decideAction(screenshot, aom, step, stepActions, ctx);
       } catch (visionErr: any) {
-        if (
-          visionErr instanceof GeminiRateLimitError ||
-          visionErr.name === "GeminiRateLimitError"
-        ) {
-          emitNarration(
-            socket,
-            `[INFO] Vision model rate limited, trying fallback...`,
-          );
+        if (visionErr instanceof GeminiRateLimitError || visionErr.name === "GeminiRateLimitError") {
+          emitNarration(socket, `[INFO] Vision model rate limited, trying vision fallback...`);
         } else {
-          console.error(
-            `[Vision] Model error (${MODELS.vision}):`,
-            visionErr?.message || visionErr,
-          );
-          emitNarration(
-            socket,
-            `[WARN] Vision model error: ${visionErr?.message?.slice(0, 80) ?? "unknown"}. Trying fallback...`,
-          );
+          console.error(`[Vision] Model error (${MODELS.vision}):`, visionErr?.message || visionErr);
+          emitNarration(socket, `[WARN] Vision model error: ${visionErr?.message?.slice(0, 80) ?? "unknown"}. Trying vision fallback...`);
         }
         try {
-          action = await fallbackDecideAction(
-            screenshot,
-            aom,
-            step,
-            ctx,
-            stepActions,
-          );
-          modelState.useFallback = true;
-          emitNarration(
-            socket,
-            `[INFO] Fallback succeeded — using fallback model for remaining steps`,
-          );
-        } catch (fallbackErr: any) {
-          if (
-            fallbackErr instanceof GeminiRateLimitError ||
-            fallbackErr.name === "GeminiRateLimitError"
-          ) {
-            throw fallbackErr;
+          action = await visionFallbackDecideAction(screenshot, aom, step, stepActions, ctx);
+          modelState.useVisionFallback = true;
+          emitNarration(socket, `[INFO] Vision fallback succeeded — using for remaining actions`);
+        } catch (visionFallbackErr: any) {
+          if (visionFallbackErr instanceof GeminiRateLimitError || visionFallbackErr.name === "GeminiRateLimitError") {
+            throw visionFallbackErr;
           }
-          emitNarration(
-            socket,
-            `[ERROR] All models failed: ${fallbackErr.message}`,
-          );
-          if (actionNum < MAX_ACTIONS_PER_STEP - 1) continue;
-          break;
+          console.error(`[VisionFallback] Model error (${MODELS.visionFallback}):`, visionFallbackErr?.message || visionFallbackErr);
+          emitNarration(socket, `[WARN] Vision fallback also failed — trying pro model...`);
+          try {
+            action = await escalatedDecideAction(screenshot, aom, step, stepActions, ctx);
+            emitNarration(socket, `[INFO] Pro model succeeded`);
+          } catch (proErr: any) {
+            console.error(`[Pro fallback] Model error (${MODELS.pro}):`, proErr?.message || proErr);
+            emitNarration(socket, `[ERROR] All models failed: ${proErr?.message ?? visionFallbackErr.message}`);
+            if (actionNum < MAX_ACTIONS_PER_STEP - 1) continue;
+            break;
+          }
         }
       }
     }
@@ -722,9 +677,11 @@ async function executeStepWithVisionLoop(
       emitNarration(socket, "[INFO] AI reports step complete — verifying...");
       try {
         const checkShot = await takeScreenshot();
+        const isActionStep = /^(navigate|click|type|enter|press|go|fill|log\s*in|login)/i.test(step.text.trim());
         const quickCheck = await verifyStep(
           checkShot,
           step.expectedBehavior,
+          isActionStep,
           ctx,
         );
         if (quickCheck.passed) {
@@ -879,12 +836,16 @@ async function executeStepWithVisionLoop(
       // call and can cause premature termination on multi-input forms.
       const skipMidVerify =
         action && (action.type === "type" || action.type === "key_press");
+        
+      const isActionStep = /^(navigate|click|type|enter|press|go|fill|log\s*in|login)/i.test(step.text.trim());
+
       if (actionNum >= 1 && !skipMidVerify) {
         try {
           const midShot = await takeScreenshot();
           const midCheck = await verifyStep(
             midShot,
             step.expectedBehavior,
+            isActionStep,
             ctx,
           );
           if (midCheck.passed) {
@@ -927,7 +888,8 @@ async function executeStepWithVisionLoop(
   emitScreenshot(socket, step.id, verifyShot, await getCurrentUrl());
 
   try {
-    const v = await verifyStep(verifyShot, step.expectedBehavior, ctx);
+    const isActionStep = /^(navigate|click|type|enter|press|go|fill|log\s*in|login)/i.test(step.text.trim());
+    const v = await verifyStep(verifyShot, step.expectedBehavior, isActionStep, ctx);
 
     // Abort/skip check after verifyStep resolves
     if (checkAbort()) return { status: "incomplete" };
@@ -977,7 +939,8 @@ async function executeStepWithVisionLoop(
         // (Simplest: just let the normal flow re-run by not returning)
         await new Promise((r) => setTimeout(r, 1000));
         const retryShot = await takeScreenshot();
-        const retryV = await verifyStep(retryShot, step.expectedBehavior, ctx);
+        const isActionStep = /^(navigate|click|type|enter|press|go|fill|log\s*in|login)/i.test(step.text.trim());
+        const retryV = await verifyStep(retryShot, step.expectedBehavior, isActionStep, ctx);
         if (retryV.passed) {
           emitNarration(socket, `[OK] Step passed on re-verification`);
           return { status: "passed" as const, lastScreenshot: retryShot };

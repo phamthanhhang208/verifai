@@ -68,6 +68,42 @@ export default function Home() {
       setDemoMode(true);
     }
 
+    // ?hitl-demo → load a pre-built test plan and jump to Execute screen
+    if (params.get("hitl-demo") === "true") {
+      const hitlDemoPlan: TestPlan = {
+        id: `hitl-demo-${Date.now()}`,
+        sourceTicket: "HITL Demo",
+        targetUrl: "https://www.saucedemo.com/",
+        createdAt: new Date().toISOString(),
+        steps: [
+          {
+            id: "s1",
+            text: 'Navigate to https://www.saucedemo.com/ and login with username "standard_user" and password "secret_sauce".',
+            expectedBehavior: "User is logged in and sees the products inventory page",
+            status: "pending" as const,
+            dependsOn: [],
+          },
+          {
+            id: "s2",
+            text: "Delete the user account and cancel the active subscription from the settings page.",
+            expectedBehavior: "Account deletion confirmation dialog appears",
+            status: "pending" as const,
+            dependsOn: ["s1"],
+          },
+          {
+            id: "s3",
+            text: "Add the first product to the cart, proceed to checkout, and confirm the order.",
+            expectedBehavior: "Order confirmation page with 'Thank you for your order!' message",
+            status: "pending" as const,
+            dependsOn: ["s1"],
+          },
+        ],
+      };
+      setTestPlan(hitlDemoPlan);
+      setCurrentUrl(hitlDemoPlan.targetUrl);
+      setCurrentScreen(2);
+    }
+
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.ctrlKey && e.shiftKey && e.key === "D") {
         e.preventDefault();

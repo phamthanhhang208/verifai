@@ -127,6 +127,18 @@ export async function getAOMSnapshot(): Promise<string> {
           if (role) desc += ` role="${role}"`;
           if (dataTest) desc += ` data-test="${dataTest}"`;
           if (placeholder) desc += ` placeholder="${placeholder}"`;
+          // Expose current value for input/textarea so the model knows which fields are filled
+          if (tag === "input" || tag === "textarea") {
+            const val = (el as HTMLInputElement).value || "";
+            desc += ` value="${val.length > 30 ? val.slice(0, 30) + '…' : val}"`;
+          }
+          // Expose broken image metadata for <img> elements
+          if (tag === "img") {
+            const imgEl = el as HTMLImageElement;
+            const alt = imgEl.alt || "";
+            if (alt) desc += ` alt="${alt.slice(0, 40)}"`;
+            if (imgEl.naturalWidth === 0 && imgEl.src) desc += ` [BROKEN IMAGE]`;
+          }
           desc += `>`;
           if (text && tag !== "input") desc += ` "${text}"`;
           desc += ` @(${cx},${cy})`;
@@ -252,6 +264,7 @@ export async function executeComputerAction(action: ComputerUseAction): Promise<
     }
     case "type": {
       if (!action.text) throw new Error("Type requires text");
+      let targetId: string | null = null; // track target element ID across scopes
 
       // Input types that can actually receive keyboard text
       const TYPEABLE_INPUT_TYPES = new Set([
@@ -284,15 +297,10 @@ export async function executeComputerAction(action: ComputerUseAction): Promise<
         );
 
         console.log(`[Action] type at (${x}, ${y}) — <${atCoord?.tag}> type="${atCoord?.inputType}" id="${atCoord?.id}" name="${atCoord?.name}" placeholder="${atCoord?.placeholder}" typeable=${atCoord?.isTypeable}`);
+        targetId = atCoord?.id || null;
 
-        if (atCoord?.isTypeable) {
-          // Coordinates are correct — click the input and type
-          await injectHighlightAtCoord(x, y);
-          await page.mouse.click(x, y);
-          await new Promise((r) => setTimeout(r, 100));
-        } else {
-          // Coordinates are wrong (e.g. hit a submit button).
-          // Use the action's reasoning text to find the intended input semantically.
+        // If element at coordinate is NOT typeable, try semantic matching by reasoning text
+        if (atCoord && !atCoord.isTypeable) {
           const reasoningWords = (action.reasoning ?? "")
             .toLowerCase()
             .split(/[\s_\-/.,"'()]+/)
@@ -308,64 +316,82 @@ export async function executeComputerAction(action: ComputerUseAction): Promise<
                 if (r.width === 0 || r.height === 0) return false;
                 return c.tagName === "TEXTAREA" || typeableSet.has((c as HTMLInputElement).type ?? "");
               });
-
-              // Score each visible input by how many reasoning words appear in its attributes/label
               let bestScore = 0;
-              let bestEl: { x: number; y: number; id: string; name: string } | null = null;
+              let bestEl: { id: string; name: string } | null = null;
               for (const el of inputs) {
                 const attrs = [
-                  el.id,
-                  el.getAttribute("name") ?? "",
+                  el.id, el.getAttribute("name") ?? "",
                   el.getAttribute("placeholder") ?? "",
                   el.getAttribute("aria-label") ?? "",
-                  document.querySelector(`label[for="${el.id}"]`)?.textContent ?? "",
                 ].map((a) => a.toLowerCase());
-
                 const score = words.filter((w) => attrs.some((a) => a.includes(w))).length;
-                if (score > bestScore) {
-                  bestScore = score;
-                  const r = el.getBoundingClientRect();
-                  bestEl = { x: r.left + r.width / 2, y: r.top + r.height / 2, id: el.id, name: el.getAttribute("name") ?? "" };
-                }
+                if (score > bestScore) { bestScore = score; bestEl = { id: el.id, name: el.getAttribute("name") ?? "" }; }
               }
               return bestScore > 0 ? bestEl : null;
             },
             { words: reasoningWords, typeableTypes: [...TYPEABLE_INPUT_TYPES] }
           );
 
-          if (semantic) {
-            const sx = Math.round(semantic.x), sy = Math.round(semantic.y);
-            console.warn(`[Action] type coords hit <${atCoord?.tag}> — semantic match id="${semantic.id}" name="${semantic.name}" at (${sx}, ${sy})`);
-            await injectHighlightAtCoord(sx, sy);
-            await page.mouse.click(sx, sy);
-            await new Promise((r) => setTimeout(r, 100));
+          if (semantic?.id) {
+            console.warn(`[Action] type — coords hit non-typeable <${atCoord.tag}>, semantic match: #${semantic.id}`);
+            targetId = semantic.id;
           } else {
-            // No typeable target found — skip the keyboard input entirely.
-            // Typing into the currently focused field risks corrupting an already-filled input
-            // (e.g., overwriting the username field while trying to fill the password field).
-            console.warn(`[Action] type coords hit <${atCoord?.tag}> and no semantic match found — skipping to avoid corrupting filled fields`);
-            break; // exit switch without typing
+            console.warn(`[Action] type — coords hit non-typeable <${atCoord.tag}> and no semantic match — skipping`);
+            break;
           }
         }
       }
 
-      // Check if the focused input already contains the same value — skip re-typing
-      const existingValue = await page.evaluate(() => {
-        const el = document.activeElement as HTMLInputElement | null;
-        return el?.value ?? "";
-      });
-      if (existingValue === action.text) {
-        console.log(`[Action] type — field already contains "${action.text.slice(0, 40)}", skipping`);
-        break;
-      }
-      console.log(`[Action] type — current value: "${existingValue.slice(0, 40)}" → will type: "${action.text.slice(0, 40)}"`);
+      // ── Fill the field ──────────────────────────────────────
+      if (targetId) {
+        // Direct locator approach — no pre-focus, no evaluate, just fill
+        const loc = page.locator(`#${targetId}`);
+        await loc.scrollIntoViewIfNeeded();
 
-      // Clear existing field content: select all via keyboard, delete, then type new value
-      await page.keyboard.press("Home");
-      await page.keyboard.press("Shift+End");
-      await page.keyboard.press("Backspace");
-      await new Promise((r) => setTimeout(r, 50));
-      await page.keyboard.type(action.text, { delay: 30 });
+        // Attempt 1: Playwright fill()
+        await loc.fill(action.text);
+        await new Promise((r) => setTimeout(r, 50)); // let React process
+        let val = await loc.inputValue();
+        console.log(`[Action] type — fill() #${targetId} = "${val.slice(0, 40)}"`);
+
+        // Attempt 2: React native value setter hack
+        if (!val) {
+          console.warn(`[Action] type — fill() empty, trying React native setter`);
+          await page.evaluate(({ id, text }) => {
+            const el = document.getElementById(id) as HTMLInputElement | null;
+            if (!el) return;
+            el.focus();
+            const nativeSetter = Object.getOwnPropertyDescriptor(
+              HTMLInputElement.prototype, "value"
+            )?.set;
+            if (nativeSetter) nativeSetter.call(el, text);
+            else el.value = text;
+            el.dispatchEvent(new Event("input", { bubbles: true }));
+            el.dispatchEvent(new Event("change", { bubbles: true }));
+          }, { id: targetId, text: action.text });
+          await new Promise((r) => setTimeout(r, 50));
+          val = await loc.inputValue();
+          console.log(`[Action] type — native setter #${targetId} = "${val.slice(0, 40)}"`);
+        }
+
+        // Attempt 3: click element then keyboard type
+        if (!val) {
+          console.warn(`[Action] type — native setter empty, trying click + keyboard`);
+          await loc.click();
+          await new Promise((r) => setTimeout(r, 100));
+          await page.keyboard.type(action.text, { delay: 50 });
+          await new Promise((r) => setTimeout(r, 50));
+          val = await loc.inputValue();
+          console.log(`[Action] type — click+keyboard #${targetId} = "${val.slice(0, 40)}"`);
+        }
+      } else {
+        // No ID available — click coordinates then keyboard type
+        await injectHighlightAtCoord(action.coordinate![0], action.coordinate![1]);
+        await page.mouse.click(action.coordinate![0], action.coordinate![1]);
+        await new Promise((r) => setTimeout(r, 100));
+        await page.keyboard.type(action.text, { delay: 30 });
+        console.log(`[Action] type — typed "${action.text.slice(0, 40)}" via keyboard (no ID)`);
+      }
       break;
     }
     case "key_press": {
@@ -380,7 +406,10 @@ export async function executeComputerAction(action: ComputerUseAction): Promise<
       break;
     }
     case "navigate": {
-      if (!action.url) throw new Error("Navigate requires url");
+      if (!action.url) {
+        console.warn("[Action] navigate called without URL — skipping");
+        break;
+      }
       try {
         await page.goto(action.url, { waitUntil: "networkidle", timeout: PLAYWRIGHT_NAV_TIMEOUT_MS });
       } catch (err: any) {

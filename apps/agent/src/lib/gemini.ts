@@ -91,6 +91,9 @@ export async function decideAction(
       - For text input fields: use the type action with the field's coordinate AND the text — this focuses the field and enters text in ONE action (do NOT send a separate click first)
       - If the step involves filling MULTIPLE fields, handle them ONE AT A TIME — type into the first field, then on the next turn type into the next field, etc.
       - CRITICAL: Before typing into any field, check the accessibility tree and screenshot for fields that ALREADY HAVE VALUES. Skip fields that are already filled and move to the NEXT EMPTY field. Look at your previous actions to see what you already did.
+      - The accessibility tree includes value="..." for input fields — use this to determine which fields are filled. A field with value="" or no value attribute is EMPTY and needs input.
+      - NEVER change the input data, credentials, usernames, passwords, or any test values specified in the task — use EXACTLY what the task says
+      - Do NOT try to work around errors by using different values — if the task says to use "locked_out_user", you MUST use "locked_out_user" even if it causes an error
       - After ALL fields are filled, click the submit/continue button — do NOT keep re-typing into fields that already have values
       - If the expected outcome is ALREADY visible on screen, respond with text "STEP_COMPLETE"
       - If an error message appears on screen and the EXPECTED OUTCOME describes that error (e.g. "error message should appear", "user should be locked out"), respond with text "STEP_COMPLETE" — the error IS the expected result
@@ -126,7 +129,7 @@ export async function decideAction(
     };
 
     const response = await getAI(ctx?.apiKey).models.generateContent(
-      // @ts-expect-error: Weird querk of GoogleGenAI
+      // @ts-expect-error
       requestBody,
     );
 
@@ -144,6 +147,105 @@ export async function decideAction(
     await waitForRateLimit(MODELS.vision);
     return callFn();
   }, "decideAction");
+}
+
+// ════════════════════════════════════════════════════════
+// VISION FALLBACK — Gemini 2.5 Computer Use Preview
+// Second Computer Use tier — used when gemini-3-flash-preview fails.
+// ════════════════════════════════════════════════════════
+
+export async function visionFallbackDecideAction(
+  screenshotBase64: string,
+  aomSnapshot: string,
+  step: TestStep,
+  previousActions: string[] = [],
+  ctx?: GeminiCallContext,
+): Promise<ComputerUseAction> {
+  const callFn = async () => {
+    const prevContext =
+      previousActions.length > 0
+        ? `\nPrevious actions this session:\n${previousActions.slice(-5).join("\n")}`
+        : "";
+
+    console.log(
+      `[Gemini] visionFallbackDecideAction → model: ${MODELS.visionFallback}`,
+    );
+
+    const requestBody = {
+      model: MODELS.visionFallback,
+      contents: [
+        {
+          role: "user",
+          parts: [
+            {
+              text: `You are an autonomous QA browser agent. You are looking at a LIVE screenshot of a web application.
+
+      YOUR CURRENT TASK: ${step.text}
+      EXPECTED OUTCOME: ${step.expectedBehavior}
+      ${step.targetElement ? `HINT — look for element matching: ${step.targetElement}` : ""}
+      ${prevContext}
+
+      Accessibility tree (with element center coordinates @(x,y)):
+      ${aomSnapshot}
+
+      INSTRUCTIONS:
+      - The browser viewport is exactly 1280×720 pixels
+      - Decide the SINGLE NEXT action to accomplish the task
+      - Use the computer_use tool to perform the action
+      - IMPORTANT: Use the @(x,y) coordinates from the accessibility tree above for precise targeting
+      - Click coordinates must target the CENTER of the element you want to interact with
+      - For text input fields: use the type action with the field's coordinate AND the text — this focuses the field and enters text in ONE action (do NOT send a separate click first)
+      - If the step involves filling MULTIPLE fields, handle them ONE AT A TIME
+      - CRITICAL: Before typing into any field, check for fields that ALREADY HAVE VALUES. Skip filled fields and move to the NEXT EMPTY field.
+      - The accessibility tree includes value="..." for input fields — use this to determine which fields are filled. A field with value="" or no value attribute is EMPTY and needs input.
+      - NEVER change the input data, credentials, usernames, passwords, or any test values specified in the task — use EXACTLY what the task says
+      - Do NOT try to work around errors by using different values.
+      - After ALL fields are filled, click the submit/continue button
+      - If the expected outcome is ALREADY visible on screen, respond with text "STEP_COMPLETE"
+      - If an error message appears and the EXPECTED OUTCOME describes that error, respond with text "STEP_COMPLETE"
+
+      After deciding the action, assess your CONFIDENCE (0.0 to 1.0).
+      If you respond with text (not a tool call), include a JSON field "confidence" in your response.`,
+            },
+            {
+              inlineData: {
+                mimeType: "image/jpeg",
+                data: screenshotBase64,
+              },
+            },
+          ],
+        },
+      ],
+      config: {
+        tools: [
+          {
+            computerUse: {
+              //environment: Environment.ENVIRONMENT_BROWSER,
+              environment: "ENVIRONMENT_BROWSER",
+            },
+          },
+        ],
+      },
+    };
+
+    const response = await getAI(ctx?.apiKey).models.generateContent(
+      // @ts-expect-error
+      requestBody,
+    );
+    return parseComputerUseResponse(response);
+  };
+
+  if (ctx) {
+    return callGeminiWithBackoff(callFn, {
+      model: MODELS.visionFallback,
+      socket: ctx.socket,
+      abortSignal: ctx.abortSignal,
+    });
+  }
+  return withRetry(async () => {
+    await waitForRateLimit(MODELS.visionFallback);
+    return callFn();
+  }, "visionFallbackDecideAction");
 }
 
 // ════════════════════════════════════════════════════════
@@ -175,10 +277,10 @@ export async function escalatedDecideAction(
           parts: [
             { inlineData: { mimeType: "image/jpeg", data: screenshotBase64 } },
             {
-              text: `You are a senior QA browser agent. The standard model already attempted this step but did NOT fully complete it — the expected outcome is NOT yet visible.
+              text: `You are a senior QA browser agent completing a test step.
 
 TASK (must be completed in full): ${step.text}
-EXPECTED OUTCOME (not yet achieved): ${step.expectedBehavior}
+EXPECTED OUTCOME: ${step.expectedBehavior}
 ${step.targetElement ? `TARGET HINT: ${step.targetElement}` : ""}
 ${prevContext}
 
@@ -187,9 +289,10 @@ ${aomSnapshot}
 
 CRITICAL INSTRUCTIONS:
 - Viewport is exactly 1280×720 pixels
-- IMPORTANT: Use the @(x,y) coordinates from the accessibility tree above for precise targeting
+- Use the @(x,y) coordinates from the accessibility tree for precise targeting
 - Look carefully at what is MISSING from the current state — what action has NOT been done yet?
 - The task may require filling multiple fields AND clicking a submit/confirm button — make sure ALL parts are done
+- The accessibility tree includes value="..." for input fields — use this to determine which fields are filled. A field with value="" or no value attribute is EMPTY and needs input. Skip filled fields.
 - Choose the SINGLE NEXT action that makes the most progress toward the expected outcome
 - NEVER change the input data, credentials, usernames, passwords, or any test values specified in the task — use EXACTLY what the task says
 - Do NOT try to work around errors by using different values — if the task says to use "locked_out_user", you MUST use "locked_out_user" even if it causes an error
@@ -199,11 +302,11 @@ CRITICAL INSTRUCTIONS:
 
 Return ONLY a JSON object — no markdown, no extra text.
 Action formats:
-- Click:    {"type":"click","coordinate":[x,y],"reasoning":"..."}
-- Type:     {"type":"type","coordinate":[x,y],"text":"text to type","reasoning":"..."}
-- Key:      {"type":"key_press","key":"Enter","reasoning":"..."}
-- Scroll:   {"type":"scroll","direction":"down","reasoning":"..."}
-- Navigate: {"type":"navigate","url":"https://...","reasoning":"..."}`,
+- Click:    {"type":"click","coordinate":[x,y],"reasoning":"...","confidence":0.9}
+- Type:     {"type":"type","coordinate":[x,y],"text":"text to type","reasoning":"...","confidence":0.9}
+- Key:      {"type":"key_press","key":"Enter","reasoning":"...","confidence":0.9}
+- Scroll:   {"type":"scroll","direction":"down","reasoning":"...","confidence":0.9}
+- Navigate: {"type":"navigate","url":"https://...","reasoning":"...","confidence":0.9}`,
             },
           ],
         },
@@ -217,26 +320,44 @@ Action formats:
         reasoning: "Step already complete (escalated)",
       } as ComputerUseAction;
     }
+
+    // Try direct JSON parse first, then extract embedded JSON from narrative text
+    let jsonText = cleanJSON(text);
+    let p: any = null;
     try {
-      const p = JSON.parse(cleanJSON(text));
+      p = JSON.parse(jsonText);
+    } catch {
+      // Pro model sometimes wraps JSON in narrative — extract it
+      const jsonMatch = text.match(/\{[\s\S]*?"type"\s*:\s*"[^"]+[\s\S]*?\}/);
+      if (jsonMatch) {
+        try {
+          p = JSON.parse(jsonMatch[0]);
+          console.warn("[Gemini] escalated: extracted JSON from narrative response");
+        } catch { /* fall through */ }
+      }
+    }
+
+    if (p && p.type) {
+      const rawType = p.type === "complete" || p.type === "done" ? "screenshot" : p.type;
       return {
-        type: p.type || "click",
+        type: rawType,
         coordinate: p.coordinate,
         text: p.text,
         key: p.key,
         url: p.url,
         direction: p.direction,
-        reasoning: `[Escalated] ${p.reasoning || "flash escalation decision"}`,
+        reasoning: `[Escalated] ${p.reasoning || "pro model decision"}`,
+        confidence: p.confidence ?? 0.9,
       } as ComputerUseAction;
-    } catch {
-      console.warn(
-        "[Gemini] escalated: non-parseable response:",
-        text.slice(0, 150),
-      );
-      throw new Error(
-        `Escalated model returned unparseable response: ${text.slice(0, 100)}`,
-      );
     }
+
+    console.warn(
+      "[Gemini] escalated: non-parseable response:",
+      text.slice(0, 150),
+    );
+    throw new Error(
+      `Escalated model returned unparseable response: ${text.slice(0, 100)}`,
+    );
   };
 
   if (ctx) {
@@ -289,9 +410,7 @@ Viewport is 1280×720. Use the computer_use tool.`,
         tools: [
           {
             computerUse: {
-              //environment: Environment.ENVIRONMENT_BROWSER,
-              // @ts-expect-error: Weird querk of GoogleGenAI
-              environment: "ENVIRONMENT_BROWSER",
+              environment: Environment.ENVIRONMENT_BROWSER,
             },
           },
         ],
@@ -349,6 +468,8 @@ export async function fallbackDecideAction(
     Decide the SINGLE NEXT action to make progress on the task.
     IMPORTANT: Use the @(x,y) coordinates from the accessibility tree for precise targeting.
     CRITICAL: Check which fields ALREADY HAVE VALUES (visible in the accessibility tree or screenshot). Do NOT retype into filled fields — advance to the NEXT EMPTY field or click the submit/continue button.
+    The accessibility tree includes value="..." for input fields — a field with value="" or no value is EMPTY and needs input.
+    NEVER change the input data, credentials, usernames, passwords, or any test values specified in the task — use EXACTLY what the task says.
     Return ONLY a JSON object — no markdown, no extra text.
 
     Action formats:
@@ -496,7 +617,7 @@ function parseComputerUseResponse(response: any): ComputerUseAction {
         coordinate,
         text: normalized.text ?? args.text,
         key: normalized.key ?? args.key,
-        url: normalized.url ?? args.url,
+        url: normalized.url || args.url || args.uri || args.value,
         direction: normalized.direction ?? args.direction,
         reasoning: args.reasoning || `Computer Use: ${part.functionCall.name}`,
         confidence: args.confidence ?? 0.8,
@@ -511,14 +632,20 @@ function parseComputerUseResponse(response: any): ComputerUseAction {
       }
       try {
         const p = JSON.parse(cleanJSON(text));
+        const rawType = p.action || p.type || "click";
+        // Map "complete"/"done" to screenshot so the session loop treats it as STEP_COMPLETE
+        const mappedType = (rawType === "complete" || rawType === "done") ? "screenshot" : rawType;
+        const mappedReasoning = (rawType === "complete" || rawType === "done")
+          ? (p.reasoning || "Step already complete")
+          : (p.reasoning || "Parsed from text");
         return {
-          type: p.action || p.type || "click",
+          type: mappedType,
           coordinate: p.coordinate,
           text: p.text || p.value,
           key: p.key,
           url: p.url,
           direction: p.direction,
-          reasoning: p.reasoning || "Parsed from text",
+          reasoning: mappedReasoning,
           confidence: p.confidence ?? 0.8,
         };
       } catch {
@@ -539,6 +666,7 @@ function parseComputerUseResponse(response: any): ComputerUseAction {
 export async function verifyStep(
   screenshotBase64: string,
   expectedBehavior: string,
+  isActionStep: boolean = false,
   ctx?: GeminiCallContext,
 ): Promise<GeminiVerification> {
   const callFn = async () => {
@@ -555,19 +683,31 @@ export async function verifyStep(
 
 Expected: ${expectedBehavior}
 
-CRITICAL RULE — EXPECTED ERRORS ARE NOT BUGS:
-If the expected behavior describes an error message, warning, validation message, or blocked state (e.g. "error message appears", "user is locked out", "login fails with error"), then SEEING that error on screen means the test PASSED. The application is behaving correctly by showing the expected error. Only mark as FAILED if the expected error is NOT shown, or if something DIFFERENT from the expected behavior occurs.
+${isActionStep ? "CRITICAL CONTEXT: This is an ACTION step (like navigating, clicking, or typing). It is NOT a verification step. Provided the action succeeded, the step PASSES." : "CRITICAL CONTEXT: This is a VERIFICATION step. You must strictly check if the expected state is met."}
 
-VERIFICATION CHECKLIST — check ALL of these:
-1. Does the screen match the expected behavior? This includes expected error messages, warnings, and validation states.
-2. Are all images loading correctly? Look for: broken images, placeholder images, or images that don't match their labels (e.g. a dog photo for a "Backpack" product is a bug)
-3. Are images UNIQUE where they should be? If multiple different items all show the SAME image, that is a bug
-4. Do text labels, names, and prices look correct and match what you'd expect?
-5. Are there any UNEXPECTED error messages, broken layouts, or visual glitches? (Error messages that match the expected behavior are NOT bugs)
+CRITICAL RULE — EXPECTED ERRORS ARE NOT BUGS:
+If the expected behavior describes an error message, warning, validation message, or blocked state (e.g. "error message appears", "user is locked out", "login fails with error"), then SEEING that error on screen means the test PASSED. Only mark as FAILED if the expected error is NOT shown, or if something DIFFERENT from the expected behavior occurs.
+
+YOUR ONLY JOB: verify whether the expected behavior above happened.
+- If YES → passed: true
+- If NO, or something clearly different happened → passed: false, describe what's wrong
+
+SCOPE RULE — Focus on whether the expected behavior happened. Do NOT fail a step because of unrelated cosmetic issues (color choices, font sizes, minor layout differences) unless the expected behavior explicitly asks you to verify visual content.
+
+IMAGE INTEGRITY RULE — Always check for and report these image issues:
+1. BROKEN IMAGES: Small icons with a torn-edge or "X" placeholder, empty boxes where images should be, or alt-text displayed in place of an image. The accessibility tree may include [BROKEN IMAGE] markers — always flag these.
+2. DUPLICATE IMAGES: Multiple products, cards, or listings showing the SAME image when they should show different ones.
+3. MISMATCHED IMAGES: Images that clearly do not match their context — e.g., a dog photo for a t-shirt listing, a food image for an electronics product, or any image that is obviously unrelated to the item/content it represents.
+
+CRITICAL: How to handle passed/failed for image issues:
+${isActionStep 
+? '- Since this is an ACTION step, do NOT fail the step due to image issues. The action succeeded. Include image issues as a "Note: [describe]" in your finding.' 
+: '- Since this is a VERIFICATION step, image issues mean the content is broken. You MUST set passed to false and report the bug.'
+}
 
 Password fields showing masked characters (dots/asterisks) is NORMAL — not a bug.
 
-Be STRICT: if the expected behavior says "correct images" and the images are wrong, duplicated, or don't match their product names, that is a FAILURE.
+URL RULE — The browser address bar is NOT visible in screenshots. Never fail a step because you cannot confirm the URL. Determine page identity from visible UI elements (headings, forms, buttons, error messages) instead.
 
 Also rate your confidence in this verification (0.0 to 1.0):
 - 1.0 = Crystal clear, unmistakable result
@@ -716,12 +856,12 @@ Return ONLY a JSON array (no markdown fences). Each step object:
 STEP ID FORMAT: "s1", "s2", "s3", etc.
 
 DEPENDENCY RULES (dependsOn field):
-- Each step lists the step IDs it depends on
-- If a dependency fails, this step is automatically SKIPPED
-- First step (navigate) has no dependencies: "dependsOn": []
-- Steps that require login should depend on the login step
-- Independent acceptance criteria should NOT depend on each other — only on shared prerequisites (like login)
-- This lets the test runner skip impossible steps but still test independent criteria
+- MOST steps should have "dependsOn": [] — run independently
+- Only set a dependency when the step is PHYSICALLY IMPOSSIBLE without a prior step succeeding
+- Valid dependency: a checkout step depending on "add item to cart" step
+- Invalid dependency: a verification step depending on a navigation step just because it comes after it
+- The navigate step (step 1) always has "dependsOn": []
+- Default to NO dependencies unless strictly required
 
 CRITICAL RULES:
 - First step must navigate to: ${targetUrl}
@@ -776,6 +916,9 @@ export async function generateVoiceNarration(
   text: string,
   ctx?: GeminiCallContext,
 ): Promise<{ audio: string; mimeType: string } | null> {
+  return null;
+
+  /*
   // Skip if TTS not desired or text is too short
   if (!text || text.length < 10) return null;
 
@@ -847,6 +990,7 @@ export async function generateVoiceNarration(
     console.warn(`[TTS] Voice generation failed: ${err.message}`);
     return null;
   }
+  */
 }
 
 // Legacy alias — Phase 3 code may import sendToolResponse

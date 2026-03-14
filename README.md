@@ -95,49 +95,91 @@ turbo dev
 
 ## Deploy
 
-### Agent → Cloud Run
+`deploy.sh` handles both services in one command: builds and pushes the agent Docker image to Artifact Registry, deploys it to Cloud Run, then deploys the web app to Vercel.
+
+### One-time setup
+
+**1. Enable GCP APIs**
+```bash
+gcloud services enable run.googleapis.com artifactregistry.googleapis.com \
+  secretmanager.googleapis.com firestore.googleapis.com storage.googleapis.com \
+  --project=YOUR_PROJECT_ID
+```
+
+**2. Store the service account key in Secret Manager**
+```bash
+gcloud secrets create verifai-sa-key \
+  --data-file=apps/agent/service-account.json --project=YOUR_PROJECT_ID
+
+SA="$(gcloud projects describe YOUR_PROJECT_ID --format='value(projectNumber)')-compute@developer.gserviceaccount.com"
+gcloud secrets add-iam-policy-binding verifai-sa-key \
+  --member="serviceAccount:$SA" --role=roles/secretmanager.secretAccessor \
+  --project=YOUR_PROJECT_ID
+```
+
+**3. Authenticate Docker**
+```bash
+gcloud auth configure-docker us-central1-docker.pkg.dev
+```
+
+**4. Install and authenticate Vercel CLI**
+```bash
+npm i -g vercel && vercel login
+cd apps/web && vercel link && cd ../..
+```
+
+**5. Add `GOOGLE_APPLICATION_CREDENTIALS_JSON` to Vercel**
+
+In Vercel dashboard → your project → **Settings → Environment Variables**, add:
+- `GOOGLE_APPLICATION_CREDENTIALS_JSON` = paste the full contents of `apps/agent/service-account.json`
+
+### Run
 
 ```bash
 export GCP_PROJECT_ID=your-project
 export GEMINI_API_KEY=your-key
-# Set other env vars as needed (see .env.example)
-chmod +x deploy.sh
-./deploy.sh
+export JIRA_BASE_URL=https://yourorg.atlassian.net/
+export JIRA_EMAIL=you@example.com
+export JIRA_API_TOKEN=your-jira-token
+export JIRA_PROJECT_KEY=YOUR_KEY
+export GCS_BUCKET_NAME=your-bucket
+export CONFLUENCE_BASE_URL=https://yourorg.atlassian.net
+export CONFLUENCE_EMAIL=you@example.com
+export CONFLUENCE_API_TOKEN=your-confluence-token
+export CORS_ORIGIN=https://your-vercel-domain.vercel.app
+
+chmod +x deploy.sh && ./deploy.sh
 ```
 
-### Web → Vercel
+The script will output the Cloud Run URL and automatically pass it to Vercel as `NEXT_PUBLIC_AGENT_URL`.
 
-Set these env vars in Vercel dashboard:
-- `NEXT_PUBLIC_AGENT_URL` = Cloud Run agent URL
-- `GCP_PROJECT_ID` = your GCP project
-- `FIRESTORE_COLLECTION` = reports
-- `GEMINI_API_KEY` = your key
-
-```bash
-cd apps/web && vercel --prod
-```
+> **Note:** The first build uses `--platform linux/amd64` (cross-compilation for Apple Silicon users) and may take a few extra minutes.
 
 ## Environment Variables
 
 | Variable | Where | Description |
 |----------|-------|-------------|
-| `GEMINI_API_KEY` | Agent + Web | Google Gemini API key |
+| `GEMINI_API_KEY` | Agent | Google Gemini API key |
 | `GEMINI_CALL_DELAY_MS` | Agent | Min delay between Gemini calls (default: 2000) |
-| `JIRA_BASE_URL` | Agent + Web | Jira instance URL |
-| `JIRA_EMAIL` | Agent + Web | Jira account email |
-| `JIRA_API_TOKEN` | Agent + Web | Jira API token |
+| `JIRA_BASE_URL` | Agent | Jira instance URL |
+| `JIRA_EMAIL` | Agent | Jira account email |
+| `JIRA_API_TOKEN` | Agent | Jira API token |
 | `JIRA_PROJECT_KEY` | Agent | Jira project key for bug tickets |
 | `GCP_PROJECT_ID` | Agent + Web | Google Cloud project ID |
 | `GCS_BUCKET_NAME` | Agent | GCS bucket for screenshots |
+| `GOOGLE_APPLICATION_CREDENTIALS_JSON` | Agent + Web | Service account JSON (inline, for Cloud Run / Vercel) |
 | `FIRESTORE_COLLECTION` | Agent + Web | Firestore collection (default: reports) |
+| `CONFLUENCE_BASE_URL` | Agent | Confluence instance URL |
+| `CONFLUENCE_EMAIL` | Agent | Confluence account email |
+| `CONFLUENCE_API_TOKEN` | Agent | Confluence API token |
 | `NEXT_PUBLIC_AGENT_URL` | Web | Agent WebSocket URL |
 | `CORS_ORIGIN` | Agent | Allowed CORS origin |
-| `PLAYWRIGHT_NAVIGATION_TIMEOUT_MS` | Agent | Navigation timeout (default: 15000) |
-| `PORT` | Agent | Server port (default: 3001) |
+| `PLAYWRIGHT_TIMEOUT_MS` | Agent | Global Playwright timeout ms (default: 30000) |
+| `PLAYWRIGHT_NAVIGATION_TIMEOUT_MS` | Agent | Navigation timeout ms (default: 15000) |
 | `HITL_ENABLED` | Agent | Enable Human-in-the-Loop interventions (default: true) |
-| `HITL_ACTION_THRESHOLD` | Agent | Minimum confidence to autonomously run an action (default: 0.7) |
-| `HITL_VERIFY_THRESHOLD` | Agent | Minimum confidence to autonomously report a verification (default: 0.6) |
-| `HITL_MAX_WAIT_MS` | Agent | Max time to wait for a human decision before auto-resuming (default: 120000) |
+| `HITL_ACTION_THRESHOLD` | Agent | Min confidence to autonomously run an action (default: 0.7) |
+| `HITL_VERIFY_THRESHOLD` | Agent | Min confidence to autonomously report a verification (default: 0.6) |
+| `HITL_MAX_WAIT_MS` | Agent | Max wait time for human decision before auto-resuming (default: 120000) |
 
 ## Hackathon
 

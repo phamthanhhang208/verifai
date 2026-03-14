@@ -8,7 +8,9 @@
 
 // ─── Model Configuration ────────────────────────────────
 export const MODELS = {
-  vision: "gemini-3-flash-preview", // Computer Use / action decisions — publicly accessible
+  vision: "gemini-3-flash-preview", // Computer Use / action decisions — primary
+  //visionFallback: "gemini-2.5-computer-use-preview-10-2025", // Computer Use fallback — second vision tier
+  visionFallback: "gemini-3-flash-preview", // Computer Use fallback — second vision tier
   lite: "gemini-2.5-flash-lite", // verification, narration, bug gen, spec parsing — 10 RPM
   flash: "gemini-2.5-flash", // escalated / fallback reasoning — 10 RPM
   pro: "gemini-2.5-pro", // spec parsing — deeper reasoning
