@@ -271,13 +271,17 @@ export async function executeComputerAction(action: ComputerUseAction): Promise<
             if (!el) return null;
             const tag = el.tagName.toLowerCase();
             const inputType = (el as HTMLInputElement).type ?? "";
+            const isTypeable = tag === "textarea" || (tag === "input" && typeableSet.has(inputType));
+            if (isTypeable) {
+              (el as HTMLElement).focus();
+            }
             return {
               tag,
               inputType,
               id: el.id,
               name: (el as HTMLInputElement).name ?? "",
               placeholder: (el as HTMLInputElement).placeholder ?? "",
-              isTypeable: tag === "textarea" || (tag === "input" && typeableSet.has(inputType)),
+              isTypeable,
             };
           },
           { px: x, py: y, typeableTypes: [...TYPEABLE_INPUT_TYPES] }
@@ -312,6 +316,7 @@ export async function executeComputerAction(action: ComputerUseAction): Promise<
               // Score each visible input by how many reasoning words appear in its attributes/label
               let bestScore = 0;
               let bestEl: { x: number; y: number; id: string; name: string } | null = null;
+              let bestElNode: HTMLInputElement | HTMLTextAreaElement | null = null;
               for (const el of inputs) {
                 const attrs = [
                   el.id,
@@ -326,9 +331,14 @@ export async function executeComputerAction(action: ComputerUseAction): Promise<
                   bestScore = score;
                   const r = el.getBoundingClientRect();
                   bestEl = { x: r.left + r.width / 2, y: r.top + r.height / 2, id: el.id, name: el.getAttribute("name") ?? "" };
+                  bestElNode = el;
                 }
               }
-              return bestScore > 0 ? bestEl : null;
+              if (bestScore > 0 && bestElNode) {
+                bestElNode.focus();
+                return bestEl;
+              }
+              return null;
             },
             { words: reasoningWords, typeableTypes: [...TYPEABLE_INPUT_TYPES] }
           );
