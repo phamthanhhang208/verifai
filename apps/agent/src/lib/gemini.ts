@@ -856,12 +856,18 @@ Return ONLY a JSON array (no markdown fences). Each step object:
 STEP ID FORMAT: "s1", "s2", "s3", etc.
 
 DEPENDENCY RULES (dependsOn field):
-- MOST steps should have "dependsOn": [] — run independently
-- Only set a dependency when the step is PHYSICALLY IMPOSSIBLE without a prior step succeeding
-- Valid dependency: a checkout step depending on "add item to cart" step
-- Invalid dependency: a verification step depending on a navigation step just because it comes after it
-- The navigate step (step 1) always has "dependsOn": []
-- Default to NO dependencies unless strictly required
+- Set a dependency when a step is PHYSICALLY IMPOSSIBLE without a prior step succeeding
+- Form submission steps MUST depend on their form-filling step (can't submit what wasn't filled)
+- Checkout/payment steps MUST depend on the cart or navigation step that gets there
+- Steps that verify state created by a prior step MUST depend on that step
+- The first (navigate) step always has "dependsOn": []
+- Examples of REQUIRED deps:
+    - "Submit checkout form" → dependsOn: [id of "Fill checkout form" step]
+    - "Verify order confirmation" → dependsOn: [id of "Submit checkout form" step]
+    - "Add item to cart then go to checkout" → dependsOn: [id of login step]
+- Examples of INVALID deps (do NOT set these):
+    - A navigation step depending on another navigation step just because it comes after it
+    - A click step depending on a previous unrelated click step
 
 CRITICAL RULES:
 - First step must navigate to: ${targetUrl}
@@ -995,3 +1001,81 @@ export async function generateVoiceNarration(
 
 // Legacy alias — Phase 3 code may import sendToolResponse
 export const sendToolResponse = retryAction;
+
+// ─── Dependency viability assessment ─────────────────────────────────────────
+// Called before skipping a dependent step. Takes a screenshot + AOM and asks
+// Gemini whether the current page state still allows the dependent step to run,
+// even though its declared dependency failed.
+// Fail-safe: any error returns canProceed:false so we never fail-open.
+
+export async function assessDependencyViability(
+  screenshotBase64: string,
+  aomSnapshot: string,
+  failedDepText: string,
+  currentStepText: string,
+  ctx?: GeminiCallContext,
+): Promise<{ canProceed: boolean; reason: string; confidence: number }> {
+  const SAFE_DEFAULT = { canProceed: false, reason: "assessment failed — defaulting to skip", confidence: 0 };
+
+  const callFn = async () => {
+    console.log(`[Gemini] assessDependencyViability → model: ${MODELS.pro}`);
+    const response = await getAI(ctx?.apiKey).models.generateContent({
+      model: MODELS.pro,
+      contents: [
+        {
+          role: "user",
+          parts: [
+            { inlineData: { mimeType: "image/jpeg", data: screenshotBase64 } },
+            {
+              text: `You are a QA agent assessing whether a test step can still be executed.
+
+CONTEXT:
+The previous step "${failedDepText}" failed or did not complete successfully.
+
+CURRENT PAGE STATE (Accessibility Object Model):
+${aomSnapshot}
+
+NEXT STEP TO EXECUTE: "${currentStepText}"
+
+QUESTION: Based solely on the current browser screenshot and DOM snapshot above, can the next step still be executed from this page state — regardless of the previous failure?
+
+Examples where canProceed should be TRUE:
+- The page already shows the state needed for the next step
+- The previous step's failure was inconsequential (e.g. a cosmetic verification step)
+- The browser navigated to the right place despite the failure
+
+Examples where canProceed should be FALSE:
+- The page shows a login screen but the next step assumes the user is logged in
+- The cart is empty but the next step assumes an item was added
+- The page shows an error blocking further navigation
+
+Return ONLY JSON, no markdown:
+{"canProceed":true/false,"reason":"brief explanation of what you see","confidence":0.85}`,
+            },
+          ],
+        },
+      ],
+    });
+
+    const parsed = JSON.parse(cleanJSON(response.text || ""));
+    return {
+      canProceed: Boolean(parsed.canProceed),
+      reason: String(parsed.reason ?? ""),
+      confidence: Number(parsed.confidence ?? 0),
+    };
+  };
+
+  try {
+    if (ctx) {
+      return await callGeminiWithBackoff(callFn, {
+        model: MODELS.pro,
+        socket: ctx.socket,
+        abortSignal: ctx.abortSignal,
+      });
+    }
+    return await callFn();
+  } catch (err: any) {
+    console.warn(`[Gemini] assessDependencyViability failed: ${err.message} — defaulting to skip`);
+    return SAFE_DEFAULT;
+  }
+}

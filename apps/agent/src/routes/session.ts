@@ -33,6 +33,7 @@ import {
   generateNarration,
   generateVoiceNarration,
   retryAction,
+  assessDependencyViability,
   type GeminiCallContext,
 } from "../lib/gemini.js";
 import { GeminiRateLimitError, MODELS } from "../lib/models.js";
@@ -165,6 +166,10 @@ export async function runSession(
   // if vision later recovers so we don't permanently downgrade.
   const modelState = { useVisionFallback: false, escalated: false };
   const failedStepIds = new Set<string>(); // Track failed steps for dependency checking
+  // Session-scoped HITL cache — keyed by `${pageUrl}:${reason}`.
+  // If the same (URL, reason) was already answered by human, auto-apply the previous decision
+  // instead of pausing again. Cleared when the session ends.
+  const hitlCache = new Map<string, HITLDecisionEvent>();
 
   try {
     emitNarration(socket, "[INFO] Launching headless browser...");
@@ -181,7 +186,7 @@ export async function runSession(
     for (let i = 0; i < testPlan.steps.length; i++) {
       const step = testPlan.steps[i];
 
-      // ── DEPENDENCY CHECK: Skip if any dependency failed ──
+      // ── DEPENDENCY CHECK: AI-assessed skip if any dependency failed ──
       if (step.dependsOn && step.dependsOn.length > 0) {
         const failedDep = step.dependsOn.find((depId) =>
           failedStepIds.has(depId),
@@ -189,6 +194,7 @@ export async function runSession(
         if (failedDep) {
           const depStep = testPlan.steps.find((s) => s.id === failedDep);
           const depName = depStep ? depStep.text : failedDep;
+
           socket.emit("event", {
             type: "step_start",
             stepId: step.id,
@@ -200,20 +206,47 @@ export async function runSession(
           );
           emitNarration(
             socket,
-            `[WARN] Skipped — depends on failed step: "${depName}"`,
+            `[INFO] Dependency "${depName}" failed — assessing current page state...`,
           );
-          step.status = "incomplete";
-          incompleteCount++;
-          socket.emit("event", {
-            type: "step_result",
-            stepId: step.id,
-            status: "incomplete",
-            finding: `Skipped — depends on failed step "${depName}"`,
-          } as StepResultEvent);
-          actionLog.push(
-            `Step "${step.text}" → skipped (depends on ${failedDep})`,
+
+          // Take a fresh screenshot + AOM to let the AI judge whether the page
+          // is still in a valid state for this step to run.
+          const depShot = await takeScreenshot();
+          const depAom = await getAOMSnapshot();
+          const viability = await assessDependencyViability(
+            depShot,
+            depAom,
+            depName,
+            step.text,
+            geminiCtx,
           );
-          continue;
+
+          if (viability.canProceed && viability.confidence >= 0.7) {
+            // AI says the page is in a valid state — let the step run
+            emitNarration(
+              socket,
+              `[INFO] AI: step can still run despite failed dependency — ${viability.reason} (confidence ${Math.round(viability.confidence * 100)}%)`,
+            );
+            // Fall through to normal step execution (do NOT continue/skip)
+          } else {
+            // AI says skip, or assessment was uncertain/failed
+            const skipReason = viability.confidence >= 0.7
+              ? viability.reason
+              : `dependency "${depName}" failed and page state is insufficient (${viability.reason})`;
+            emitNarration(socket, `[WARN] Skipped — ${skipReason}`);
+            step.status = "incomplete";
+            incompleteCount++;
+            socket.emit("event", {
+              type: "step_result",
+              stepId: step.id,
+              status: "incomplete",
+              finding: `Skipped — ${skipReason}`,
+            } as StepResultEvent);
+            actionLog.push(
+              `Step "${step.text}" → skipped (dep ${failedDep} failed; AI: ${viability.reason})`,
+            );
+            continue;
+          }
         }
       }
 
@@ -266,6 +299,7 @@ export async function runSession(
         actionLog,
         geminiCtx,
         modelState,
+        hitlCache,
         skipSignal,
         abortToken,
       );
@@ -474,6 +508,7 @@ async function executeStepWithVisionLoop(
   actionLog: string[],
   ctx: GeminiCallContext,
   modelState: { useVisionFallback: boolean; escalated: boolean },
+  hitlCache: Map<string, HITLDecisionEvent>,
   skipSignal?: Set<string>,
   abortToken?: { aborted: boolean },
 ): Promise<StepResult> {
@@ -623,21 +658,30 @@ async function executeStepWithVisionLoop(
     // │ 2c. HITL CHECK — Low confidence action       │
     // └──────────────────────────────────────────────┘
     if (shouldPauseForAction(action)) {
-      const reason = classifyPauseReason(action, {
-        currentUrl: await getCurrentUrl(),
-        stepText: step.text,
-      });
+      const currentUrl = await getCurrentUrl();
+      const reason = classifyPauseReason(action, { currentUrl, stepText: step.text });
       const question = generateQuestion(reason, action, step.text);
+      const hitlKey = `${currentUrl}:${reason}`;
 
-      const decision = await pauseForHuman(socket, sessionId, {
-        stepId: step.id,
-        stepText: step.text,
-        reason,
-        question,
-        screenshotBase64: screenshot,
-        suggestedAction: action,
-        confidence: action.confidence ?? 0,
-      });
+      let decision: HITLDecisionEvent;
+      const cachedDecision = hitlCache.get(hitlKey);
+      if (cachedDecision && cachedDecision.decision !== "retry" && cachedDecision.decision !== "override") {
+        emitNarration(socket, `[HITL] Auto-applying previous decision "${cachedDecision.decision}" (same page + reason: ${reason})`);
+        decision = cachedDecision;
+      } else {
+        decision = await pauseForHuman(socket, sessionId, {
+          stepId: step.id,
+          stepText: step.text,
+          reason,
+          question,
+          screenshotBase64: screenshot,
+          suggestedAction: action,
+          confidence: action.confidence ?? 0,
+        });
+        if (decision.decision !== "retry" && decision.decision !== "override") {
+          hitlCache.set(hitlKey, decision);
+        }
+      }
 
       // Apply decision
       switch (decision.decision) {
