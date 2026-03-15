@@ -24,6 +24,19 @@ export class PlaywrightActionError extends Error {
   }
 }
 
+// ─── Typed error for field-fill rejection ────────────────
+// Thrown when all 3 fill strategies (fill, native setter, keyboard) fail to
+// persist a value. Signals a potential product bug (e.g. a React controlled
+// component that discards writes), not an infrastructure failure.
+export class FillRejectedError extends Error {
+  readonly selector: string;
+  constructor(selector: string) {
+    super(`Field ${selector} rejected value after 3 fill attempts`);
+    this.name = "FillRejectedError";
+    this.selector = selector;
+  }
+}
+
 function classifyPlaywrightError(err: any, isNavigation = false): PlaywrightActionError {
   const msg: string = err?.message || String(err);
 
@@ -276,7 +289,7 @@ export async function executeComputerAction(action: ComputerUseAction): Promise<
       if (action.coordinate) {
         const [x, y] = action.coordinate;
 
-        // Check what element is actually at the target coordinate.
+        // Check what element is actually at the target coordinate, including its current value.
         const atCoord = await page.evaluate(
           ({ px, py, typeableTypes }: { px: number; py: number; typeableTypes: string[] }) => {
             const typeableSet = new Set(typeableTypes);
@@ -290,6 +303,7 @@ export async function executeComputerAction(action: ComputerUseAction): Promise<
               id: el.id,
               name: (el as HTMLInputElement).name ?? "",
               placeholder: (el as HTMLInputElement).placeholder ?? "",
+              value: (el as HTMLInputElement).value ?? "",
               isTypeable: tag === "textarea" || (tag === "input" && typeableSet.has(inputType)),
             };
           },
@@ -297,7 +311,19 @@ export async function executeComputerAction(action: ComputerUseAction): Promise<
         );
 
         console.log(`[Action] type at (${x}, ${y}) — <${atCoord?.tag}> type="${atCoord?.inputType}" id="${atCoord?.id}" name="${atCoord?.name}" placeholder="${atCoord?.placeholder}" typeable=${atCoord?.isTypeable}`);
-        targetId = atCoord?.id || null;
+
+        // Build the CSS selector from id (preferred) or name attribute — no mouse.click needed
+        if (atCoord?.id) {
+          targetId = atCoord.id;
+        } else if (atCoord?.isTypeable && atCoord.name) {
+          targetId = `[name="${atCoord.name}"]`;
+        }
+
+        // Skip if the field already contains exactly the text we want to type (read from elementFromPoint, not activeElement)
+        if (atCoord?.isTypeable && atCoord.value === action.text) {
+          console.log(`[Action] type — field at (${x}, ${y}) already has "${action.text.slice(0, 40)}" — skipping`);
+          break;
+        }
 
         // If element at coordinate is NOT typeable, try semantic matching by reasoning text
         if (atCoord && !atCoord.isTypeable) {
@@ -344,21 +370,26 @@ export async function executeComputerAction(action: ComputerUseAction): Promise<
 
       // ── Fill the field ──────────────────────────────────────
       if (targetId) {
-        // Direct locator approach — no pre-focus, no evaluate, just fill
-        const loc = page.locator(`#${targetId}`);
+        // targetId is either "#some-id" style id or "[name=...]" — build the selector
+        const selector = targetId.startsWith("[") ? targetId : `#${targetId}`;
+        const loc = page.locator(selector);
         await loc.scrollIntoViewIfNeeded();
 
         // Attempt 1: Playwright fill()
         await loc.fill(action.text);
         await new Promise((r) => setTimeout(r, 50)); // let React process
         let val = await loc.inputValue();
-        console.log(`[Action] type — fill() #${targetId} = "${val.slice(0, 40)}"`);
+        const domVal = await page.evaluate((sel) => {
+          const el = document.querySelector(sel) as HTMLInputElement;
+          return { value: el?.value, readOnly: el?.readOnly, disabled: el?.disabled };
+        }, selector);
+        console.log(`[Action] type — fill() ${selector} = "${val}" | DOM: ${JSON.stringify(domVal)}`);
 
         // Attempt 2: React native value setter hack
         if (!val) {
           console.warn(`[Action] type — fill() empty, trying React native setter`);
-          await page.evaluate(({ id, text }) => {
-            const el = document.getElementById(id) as HTMLInputElement | null;
+          await page.evaluate(({ sel, text }) => {
+            const el = document.querySelector(sel) as HTMLInputElement | null;
             if (!el) return;
             el.focus();
             const nativeSetter = Object.getOwnPropertyDescriptor(
@@ -368,10 +399,10 @@ export async function executeComputerAction(action: ComputerUseAction): Promise<
             else el.value = text;
             el.dispatchEvent(new Event("input", { bubbles: true }));
             el.dispatchEvent(new Event("change", { bubbles: true }));
-          }, { id: targetId, text: action.text });
+          }, { sel: selector, text: action.text });
           await new Promise((r) => setTimeout(r, 50));
           val = await loc.inputValue();
-          console.log(`[Action] type — native setter #${targetId} = "${val.slice(0, 40)}"`);
+          console.log(`[Action] type — native setter ${selector} = "${val.slice(0, 40)}"`);
         }
 
         // Attempt 3: click element then keyboard type
@@ -382,7 +413,12 @@ export async function executeComputerAction(action: ComputerUseAction): Promise<
           await page.keyboard.type(action.text, { delay: 50 });
           await new Promise((r) => setTimeout(r, 50));
           val = await loc.inputValue();
-          console.log(`[Action] type — click+keyboard #${targetId} = "${val.slice(0, 40)}"`);
+          console.log(`[Action] type — click+keyboard ${selector} = "${val.slice(0, 40)}"`);
+        }
+
+        if (!val) {
+          console.error(`[Action] type — all 3 fill strategies failed for ${selector}`);
+          throw new FillRejectedError(selector);
         }
       } else {
         // No ID available — click coordinates then keyboard type

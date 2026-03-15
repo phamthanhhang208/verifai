@@ -23,6 +23,7 @@ import {
   executeComputerAction,
   closeBrowser,
   PlaywrightActionError,
+  FillRejectedError,
 } from "../lib/playwright.js";
 import {
   decideAction,
@@ -762,6 +763,50 @@ async function executeStepWithVisionLoop(
     // │ 5. SELF-HEAL — If action failed, fix coords  │
     // └──────────────────────────────────────────────┘
     if (caughtActionErr) {
+      // Field rejected all fill attempts — potential product bug, ask human
+      if (caughtActionErr instanceof FillRejectedError) {
+        const pauseShot = await takeScreenshot();
+        emitNarration(
+          socket,
+          `[WARN] Field "${caughtActionErr.selector}" rejected all fill attempts — asking human`,
+        );
+
+        const decision = await pauseForHuman(socket, sessionId, {
+          stepId: step.id,
+          stepText: step.text,
+          reason: "unexpected_page_state",
+          question: `The field "${caughtActionErr.selector}" rejected all fill attempts (value always empty after write). Is this a product bug, or should we skip this step?`,
+          screenshotBase64: pauseShot,
+          confidence: 0,
+        });
+
+        if (decision.decision === "proceed") {
+          emitNarration(socket, `[FAIL] Field fill rejected — human confirmed as bug`);
+          return {
+            status: "failed" as const,
+            lastScreenshot: pauseShot,
+            bug: {
+              id: `bug-${Date.now()}`,
+              stepId: step.id,
+              title: `Form field rejects input: ${caughtActionErr.selector}`,
+              description: `Field "${caughtActionErr.selector}" rejects all programmatic value writes. The value is always empty after fill(), native setter, and keyboard input — indicating a broken React controlled component.`,
+              severity: "high" as const,
+              screenshotUrl: "",
+              expectedBehavior: step.expectedBehavior,
+              actualBehavior: `Field "${caughtActionErr.selector}" does not accept input`,
+              failureType: "assertion" as const,
+            },
+          };
+        } else {
+          emitNarration(socket, `[WARN] Field fill rejected — skipping step per human decision`);
+          return {
+            status: "incomplete" as const,
+            incompleteReason: "crash" as const,
+            lastScreenshot: pauseShot,
+          };
+        }
+      }
+
       // Playwright infrastructure failure → mark incomplete
       if (caughtActionErr instanceof PlaywrightActionError) {
         const isNav = caughtActionErr.isNavigation;

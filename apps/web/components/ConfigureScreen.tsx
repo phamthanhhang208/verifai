@@ -246,24 +246,20 @@ export default function ConfigureScreen({
                       🧪 Demo mode
                     </p>
                     <p className="text-xs text-gray-400 mb-2">
-                      Use these sample Jira tickets to see Verifai in action:
+                      Try these sample tickets — each demos a different Verifai capability:
                     </p>
-                    <ul className="text-xs text-gray-400 space-y-0.5">
+                    <ul className="text-xs text-gray-400 space-y-1">
                       <li>
-                        <span className="text-indigo-400 font-mono">
-                          KAN-65
-                        </span>{" "}
-                        · HITL validation flow
+                        <span className="text-indigo-400 font-mono">KAN-65</span>{" "}
+                        · Login flow — verifies that <span className="text-yellow-400/80">locked_out_user</span> is correctly blocked
                       </li>
                       <li>
-                        <span className="text-indigo-400 font-mono">
-                          KAN-47
-                        </span>{" "}
-                        · Full purchase flow (catches real bugs!)
+                        <span className="text-indigo-400 font-mono">KAN-47</span>{" "}
+                        · Checkout flow — triggers a real bug + HITL confirmation on <span className="text-yellow-400/80">problem_user</span>
                       </li>
                       <li>
                         <span className="text-indigo-400 font-mono">KAN-5</span>{" "}
-                        · Happy path smoke test
+                        · Happy path — end-to-end smoke test for a clean purchase
                       </li>
                     </ul>
                   </div>
