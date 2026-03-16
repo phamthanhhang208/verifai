@@ -15,6 +15,8 @@ Verifai is an autonomous QA agent that reads Jira tickets, navigates live web ap
    - Verifies the result with Gemini 2.5 Flash Lite
 4. **Reports** bugs with screenshots, expected vs actual behavior, and auto-created Jira tickets
 
+**Simulation Tickets**: https://docs.google.com/spreadsheets/d/1j0AUvxSyCdNytiWE141tgbuf2KhZlE0N/edit?usp=sharing&ouid=108633293263262860350&rtpof=true&sd=true
+
 ## Key Features
 
 - **Autonomous Web Testing**: AI vision navigates the DOM, clicks, types, and verifies outcomes.
